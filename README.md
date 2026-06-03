@@ -112,6 +112,35 @@ git push heroku main
 - Get trial: https://console.twilio.com
 - Phone number required for SMS
 
+## 💳 Stripe Setup (payments)
+
+The payment flow is already built — **signup → 14-day free trial → `/upgrade` →
+Stripe Checkout → webhook activates the subscription → billing portal to manage/cancel.**
+You only need to plug in your keys.
+
+1. **Create products** in the [Stripe Dashboard](https://dashboard.stripe.com/products) —
+   one recurring price per tier (e.g. Starter $49, Growth $99, Pro $199 / month).
+   Copy each **Price ID** (`price_...`).
+2. **Get your Secret key** from Developers → API keys (`sk_live_...` or `sk_test_...`).
+3. **Add a webhook** (Developers → Webhooks → Add endpoint):
+   - URL: `https://YOUR_DOMAIN/api/stripe/webhook`
+   - Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`
+   - Copy the **Signing secret** (`whsec_...`).
+4. **Set these env vars** (Render dashboard or `.env`):
+   ```
+   STRIPE_SECRET_KEY=sk_live_...
+   STRIPE_WEBHOOK_SECRET=whsec_...
+   STRIPE_STARTER_PRICE_ID=price_...
+   STRIPE_GROWTH_PRICE_ID=price_...
+   STRIPE_PRO_PRICE_ID=price_...
+   APP_URL=https://YOUR_DOMAIN
+   ```
+5. Redeploy. The "Upgrade" buttons now open Stripe Checkout. Until these are set,
+   the app runs in trial-only mode (no charges) and the upgrade page shows a
+   friendly "payments not yet enabled" message.
+
+> Test it first with `sk_test_...` keys and Stripe's test card `4242 4242 4242 4242`.
+
 ## 📊 Project Structure
 
 ```
