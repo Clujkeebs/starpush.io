@@ -892,7 +892,12 @@ Only output the JSON array, no other text.`,
 
     const raw = msg.content[0]?.text?.trim() || '[]';
     let posts;
-    try { posts = JSON.parse(raw); } catch { posts = []; }
+    try {
+      const match = raw.match(/\[[\s\S]*\]/);
+      posts = JSON.parse(match ? match[0] : raw);
+    } catch { posts = []; }
+    if (!Array.isArray(posts) || posts.length === 0)
+      return res.status(502).json({ error: 'Could not generate posts right now — please try again.' });
     res.json({ success: true, posts });
   } catch (err) {
     console.error('[GeneratePosts]', err.message);
@@ -962,7 +967,7 @@ app.post('/api/optimize', async (req, res) => {
     return res.json({ success: true, analysis });
   } catch (err) {
     console.error('[GBP Optimize]', err.message);
-    return res.status(502).json({ error: err.message });
+    return res.status(502).json({ error: friendlyAIError(err) });
   }
 });
 
