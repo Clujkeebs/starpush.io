@@ -209,6 +209,73 @@ async function generateGBPOptimization({ businessName, category, city, services,
   return JSON.parse(match[0]);
 }
 
+// ── GBP Starter (guided launch helper for brand-new profiles) ─────────────────
+async function generateGBPStarter({ businessName, category, city, services, hasProfile, ownerName }) {
+  if (!process.env.ANTHROPIC_API_KEY) throw new Error('Anthropic API key not configured.');
+  const Anthropic = require('@anthropic-ai/sdk');
+  const client    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const userMsg   = [
+    `Business Name: ${businessName}`,
+    `Trade / GBP Category: ${category}`,
+    `City: ${city}`,
+    `Services Offered: ${services || 'Not specified'}`,
+    `Already has a Google Business Profile: ${hasProfile ? 'Yes — needs help finishing setup' : 'No — starting from scratch'}`,
+    `Owner First Name: ${ownerName || 'Not provided'}`,
+  ].join('\n');
+
+  const message = await client.messages.create({
+    model: 'claude-sonnet-4-6', max_tokens: 3500,
+    system: `You are a Google Business Profile onboarding specialist. Your job is to walk a brand-new local service business through setting up their Google Business Profile (GBP) from zero, in plain, friendly, jargon-free language.
+
+This is a STARTER program — assume the owner has never done this before. Be encouraging and concrete. Give them everything they need to copy-paste so they can finish setup in one sitting.
+
+RULES:
+- Use the actual business name, city, and trade in every recommendation.
+- Use real, exact GBP category names as Google lists them.
+- Steps must be ordered, beginner-friendly, and reference the real Google flow (create at business.google.com, verify by postcard/phone/video, etc.).
+- The first Google Post body must be 80-100 words, warm and welcoming since they are brand new.
+- Each Q&A answer must mention the city and a service naturally for local SEO.
+- Return ONLY valid JSON — no markdown, no code fences, no text outside the JSON.
+
+Required JSON structure (follow exactly):
+{
+  "intro": "<2 friendly sentences welcoming them by business name and city, setting expectations>",
+  "estimatedTime": "<e.g. About 30 minutes>",
+  "readiness": ["<thing to have ready before starting>","<thing>","<thing>"],
+  "steps": [
+    { "num": 1, "icon": "<single emoji>", "title": "<short step title>", "detail": "<2-4 sentence plain-language how-to>", "tip": "<one short pro tip>" }
+  ],
+  "assets": {
+    "primaryCategory": "<exact GBP category>",
+    "additionalCategories": ["<cat>","<cat>","<cat>"],
+    "description": "<250-300 character copy-paste GBP description>",
+    "services": ["<service>","<service>","<service>","<service>","<service>","<service>"],
+    "firstPost": { "title": "<title>", "body": "<80-100 word welcome post>", "cta": "<call to action>" },
+    "firstQA": [
+      { "question": "<q>", "answer": "<a>" },
+      { "question": "<q>", "answer": "<a>" },
+      { "question": "<q>", "answer": "<a>" }
+    ],
+    "photoChecklist": [
+      { "photo": "<photo to take>", "priority": "Critical", "why": "<why>" },
+      { "photo": "<photo>", "priority": "High", "why": "<why>" },
+      { "photo": "<photo>", "priority": "High", "why": "<why>" },
+      { "photo": "<photo>", "priority": "Medium", "why": "<why>" },
+      { "photo": "<photo>", "priority": "Medium", "why": "<why>" }
+    ]
+  },
+  "launchChecklist": ["<concrete task>","<task>","<task>","<task>","<task>","<task>","<task>"]
+}
+
+Generate 6-8 steps covering at minimum: create the profile, verify it, set the primary category, add the description, list services, upload photos, publish a first post, and start collecting reviews.`,
+    messages: [{ role: 'user', content: userMsg }],
+  });
+  const raw   = message.content[0].text;
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('AI returned unexpected format. Please try again.');
+  return JSON.parse(match[0]);
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // AUTH ROUTES
 // ════════════════════════════════════════════════════════════════════════════
@@ -895,6 +962,26 @@ app.post('/api/optimize', async (req, res) => {
   }
 });
 
+// POST /api/gbp-starter — guided launch plan for new/unfinished profiles
+app.post('/api/gbp-starter', requireAuth, async (req, res) => {
+  const { businessName, category, city, services, hasProfile } = req.body;
+  if (!businessName || !category || !city) {
+    return res.status(400).json({ error: 'businessName, category, and city are required.' });
+  }
+  try {
+    const plan = await generateGBPStarter({
+      businessName, category, city, services,
+      hasProfile: !!hasProfile,
+      ownerName: (req.user.name || '').split(' ')[0],
+    });
+    console.log(`[GBP Starter] ${businessName} in ${city} — ${plan.steps?.length || 0} steps`);
+    return res.json({ success: true, plan });
+  } catch (err) {
+    console.error('[GBP Starter]', err.message);
+    return res.status(502).json({ error: friendlyAIError(err) });
+  }
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // PAGE ROUTES
 // ════════════════════════════════════════════════════════════════════════════
@@ -907,6 +994,7 @@ app.get('/upgrade',             requireAuth, (_req, res) => res.sendFile(path.jo
 app.get('/ranking-calculator',  (_req, res) => res.sendFile(path.join(__dirname, 'public', 'ranking-calculator.html')));
 app.get('/dashboard',           requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
 app.get('/optimize',            requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'optimize.html')));
+app.get('/starter',             requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'starter.html')));
 app.get('/account',             requireAuth, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'account.html')));
 app.get('/insights',            requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'insights.html')));
 app.get('/reset-password',      (_req, res) => res.sendFile(path.join(__dirname, 'public', 'reset-password.html')));

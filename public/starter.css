@@ -1,0 +1,146 @@
+/* ── GBP Starter — page-specific styles (extends optimize.css) ─────────────── */
+
+/* "Where are you starting from?" radio group */
+.st-radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.st-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 220px;
+  padding: 11px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+  transition: var(--ease);
+  background: var(--white);
+}
+.st-radio:hover { border-color: var(--navy); }
+.st-radio input { accent-color: var(--navy); width: 16px; height: 16px; flex-shrink: 0; }
+.st-radio:has(input:checked) {
+  border-color: var(--navy);
+  background: #f0f6ff;
+}
+
+/* Intro card */
+.st-intro-text { font-size: 15px; line-height: 1.65; color: var(--text); margin-bottom: 14px; }
+.st-meta-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.st-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--light);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--navy);
+}
+.st-readiness { margin-top: 14px; }
+.st-readiness-lbl { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+.st-readiness ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.st-readiness li { font-size: 13.5px; color: var(--text); padding-left: 22px; position: relative; }
+.st-readiness li::before { content: "📌"; position: absolute; left: 0; }
+
+/* Step timeline */
+.st-steps { display: flex; flex-direction: column; }
+.st-step {
+  display: flex;
+  gap: 14px;
+  padding: 4px 0 18px;
+  position: relative;
+}
+.st-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 38px;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.st-step-num {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--navy);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 800;
+  z-index: 1;
+}
+.st-step-body { flex: 1; padding-top: 2px; }
+.st-step-title { font-size: 14.5px; font-weight: 700; color: var(--text); margin-bottom: 5px; display: flex; align-items: center; gap: 7px; }
+.st-step-icon { font-size: 16px; }
+.st-step-detail { font-size: 13.5px; line-height: 1.6; color: var(--muted); }
+.st-step-tip {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--navy);
+  background: #fff8eb;
+  border-left: 3px solid var(--amber);
+  border-radius: 4px;
+  padding: 7px 10px;
+}
+.st-step-tip strong { color: var(--amber-dk); }
+
+/* Services pills */
+.st-services { display: flex; flex-wrap: wrap; gap: 8px; }
+.st-service-pill {
+  background: var(--light);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 7px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Launch checklist */
+.st-checklist { display: flex; flex-direction: column; gap: 8px; }
+.st-check-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: var(--ease);
+}
+.st-check-item:hover { border-color: var(--navy); }
+.st-check-box {
+  width: 22px; height: 22px;
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: #fff;
+  transition: var(--ease);
+}
+.st-check-item.checked { background: #f0fdf4; border-color: var(--green); }
+.st-check-item.checked .st-check-box { background: var(--green); border-color: var(--green); }
+.st-check-item.checked .st-check-label { color: var(--muted); text-decoration: line-through; }
+.st-check-label { font-size: 13.5px; font-weight: 500; color: var(--text); }
+
+/* Next-step nudge */
+.st-next {
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.st-next a { color: var(--navy); font-weight: 700; text-decoration: none; }
+.st-next a:hover { text-decoration: underline; }

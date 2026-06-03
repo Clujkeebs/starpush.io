@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Google Business Profile Starter — Step-by-Step Setup | Starpush</title>
+  <meta name="description" content="Brand new to Google Business Profile? The Starpush GBP Starter walks you through setup from scratch — a step-by-step launch plan plus copy-paste category, description, services, first post, Q&A, and a photo checklist." />
+  <link rel="canonical" href="https://starpush.io/starter" />
+  <meta name="robots" content="noindex" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="optimize.css" />
+  <link rel="stylesheet" href="starter.css" />
+</head>
+<body>
+
+  <!-- ── Header ── -->
+  <header class="o-header">
+    <a href="/dashboard" class="o-back">← Dashboard</a>
+    <div class="o-logo">
+      <span>🚀</span>
+      <span class="o-logo-text">
+        <span class="o-logo-name">Starpush</span>
+      </span>
+    </div>
+    <span class="o-badge">GBP Starter</span>
+  </header>
+
+  <!-- ── Form Hero ── -->
+  <section class="o-hero">
+    <div class="o-hero-inner">
+      <div class="o-hero-copy">
+        <h1 class="o-h1">Google Business Profile Starter</h1>
+        <p class="o-sub">Brand new to Google Business Profile? Tell us about your business and Claude builds a complete, beginner-friendly launch plan — every step in order, plus copy-paste category, description, services, your first post, Q&amp;A, and a photo checklist to get you live on Google Maps today.</p>
+      </div>
+
+      <div class="o-form-card" id="form-card">
+        <div class="o-form-grid">
+
+          <div class="o-field">
+            <label class="o-lbl" for="f-name">Business Name <span class="req">*</span></label>
+            <input class="o-inp" type="text" id="f-name" placeholder="Austin HVAC Pros" />
+          </div>
+
+          <div class="o-field">
+            <label class="o-lbl" for="f-category">Trade / Category <span class="req">*</span></label>
+            <select class="o-inp" id="f-category">
+              <option value="">Select your trade…</option>
+              <option value="HVAC Contractor">AC / HVAC</option>
+              <option value="Plumber">Plumbing</option>
+              <option value="Electrician">Electrical</option>
+              <option value="Roofing Contractor">Roofing</option>
+              <option value="Landscaper">Landscaping / Lawn Care</option>
+              <option value="Pest Control Service">Pest Control</option>
+              <option value="House Cleaning Service">House Cleaning</option>
+              <option value="Auto Repair Shop">Auto Repair</option>
+              <option value="Appliance Repair Service">Appliance Repair</option>
+              <option value="Painter">Painting</option>
+              <option value="Flooring Contractor">Flooring</option>
+              <option value="Window Installation Service">Windows &amp; Doors</option>
+              <option value="Handyman">Handyman</option>
+              <option value="Pool Service">Pool Service &amp; Repair</option>
+              <option value="Tree Service">Tree Service</option>
+              <option value="Pressure Washing Service">Pressure Washing</option>
+              <option value="Garage Door Service">Garage Door Service</option>
+              <option value="Locksmith">Locksmith</option>
+              <option value="Water Damage Restoration Service">Water Damage Restoration</option>
+              <option value="Moving Company">Moving Company</option>
+            </select>
+          </div>
+
+          <div class="o-field">
+            <label class="o-lbl" for="f-city">City <span class="req">*</span></label>
+            <input class="o-inp" type="text" id="f-city" placeholder="Austin, TX" />
+          </div>
+
+          <div class="o-field o-field-full">
+            <label class="o-lbl" for="f-services">Services You Offer <span class="o-opt">(optional — helps us tailor your plan)</span></label>
+            <textarea class="o-inp o-ta" id="f-services" rows="3"
+              placeholder="AC repair, furnace installation, emergency HVAC, duct cleaning, tune-ups, new system install…"></textarea>
+          </div>
+
+          <div class="o-field o-field-full">
+            <label class="o-lbl">Where are you starting from?</label>
+            <div class="st-radio-row">
+              <label class="st-radio">
+                <input type="radio" name="hasProfile" value="no" checked />
+                <span>I don't have a profile yet — start from scratch</span>
+              </label>
+              <label class="st-radio">
+                <input type="radio" name="hasProfile" value="yes" />
+                <span>I started one but never finished setup</span>
+              </label>
+            </div>
+          </div>
+
+        </div><!-- /grid -->
+
+        <div id="f-error" class="o-error hidden"></div>
+
+        <button class="o-analyze-btn" id="start-btn">
+          <span id="start-btn-txt">Build My Launch Plan →</span>
+          <span class="o-spinner hidden" id="start-spinner"></span>
+        </button>
+
+        <p class="o-form-note">Takes 10–20 seconds. Powered by Claude AI.</p>
+
+        <!-- What you'll get preview -->
+        <div class="o-output-preview">
+          <div class="o-output-preview-label">Your launch plan will include:</div>
+          <div class="o-output-chips">
+            <span class="o-chip">🧭 Step-by-Step Setup</span>
+            <span class="o-chip">🗂 Exact Category</span>
+            <span class="o-chip">✍️ Ready-Made Description</span>
+            <span class="o-chip">🛠 Services List</span>
+            <span class="o-chip">📣 Your First Post</span>
+            <span class="o-chip">❓ Starter Q&amp;A</span>
+            <span class="o-chip">📸 Photo Checklist</span>
+            <span class="o-chip">✅ Launch Checklist</span>
+          </div>
+        </div>
+      </div><!-- /form-card -->
+    </div>
+  </section>
+
+  <!-- ── Loading state ── -->
+  <div class="o-loading hidden" id="o-loading">
+    <div class="o-loading-inner">
+      <div class="o-loading-ring">
+        <svg viewBox="0 0 60 60">
+          <circle cx="30" cy="30" r="26" />
+        </svg>
+        <span>🚀</span>
+      </div>
+      <p class="o-loading-title">Building the launch plan for <span id="loading-biz">your business</span>…</p>
+      <div class="o-loading-steps" id="loading-steps">
+        <div class="lstep active" data-step="0">Mapping out your setup steps</div>
+        <div class="lstep" data-step="1">Picking your best Google category</div>
+        <div class="lstep" data-step="2">Writing your description &amp; first post</div>
+        <div class="lstep" data-step="3">Drafting starter Q&amp;A</div>
+        <div class="lstep" data-step="4">Building your photo &amp; launch checklist</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Results ── -->
+  <section class="o-results hidden" id="o-results">
+    <div class="o-results-inner">
+      <div id="card-intro"   class="opt-card"></div>
+      <div id="card-steps"   class="opt-card"></div>
+      <div id="card-category" class="opt-card"></div>
+      <div id="card-description" class="opt-card"></div>
+      <div id="card-services" class="opt-card"></div>
+      <div id="card-post"    class="opt-card"></div>
+      <div id="card-qa"      class="opt-card"></div>
+      <div id="card-photos"  class="opt-card"></div>
+      <div id="card-checklist" class="opt-card"></div>
+
+      <!-- Actions row -->
+      <div class="res-actions">
+        <button class="o-reanalyze-btn" id="restart-btn">← Start Over</button>
+        <button class="o-download-btn" id="download-btn">⬇ Download Launch Plan</button>
+      </div>
+
+      <div class="st-next">
+        Profile live? Run the <a href="/optimize">GBP Optimizer →</a> to fine-tune your ranking.
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Footer ── -->
+  <footer style="background:#081624;padding:18px 24px;text-align:center;margin-top:48px">
+    <div style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:700;color:#fff">🚀 Starpush</span>
+      <span style="color:rgba(255,255,255,.15)">|</span>
+      <a href="/terms" style="font-size:12px;color:rgba(255,255,255,.45);text-decoration:none">Terms</a>
+      <a href="/privacy" style="font-size:12px;color:rgba(255,255,255,.45);text-decoration:none">Privacy</a>
+      <a href="mailto:hello@starpush.io" style="font-size:12px;color:rgba(255,255,255,.45);text-decoration:none">Contact</a>
+      <span style="color:rgba(255,255,255,.15)">|</span>
+      <span style="font-size:11px;color:rgba(255,255,255,.2)">&copy; 2026 Starpush</span>
+    </div>
+  </footer>
+
+  <script src="starter.js"></script>
+</body>
+</html>

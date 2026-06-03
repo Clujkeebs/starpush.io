@@ -9,8 +9,15 @@ A B2B local SEO & review automation platform for service businesses. Automate Go
 - Generate professional AI replies powered by Claude
 - Automatic activity feed tracking
 
+### GBP Starter (new)
+- Guided, step-by-step setup helper for businesses creating their Google Business Profile from scratch
+- Ordered, beginner-friendly launch steps (create → verify → categorize → describe → photos → first post → reviews)
+- Copy-paste-ready category, description, services list, first Google Post, and starter Q&A
+- Photo checklist and an interactive launch checklist
+- Downloadable launch plan
+
 ### GBP Optimizer
-- AI-powered Google Business Profile audit
+- AI-powered Google Business Profile audit (for profiles that are already live)
 - Optimized description generation (copy-paste ready)
 - Category recommendations
 - Photo checklist for optimal ranking
@@ -76,19 +83,23 @@ git push heroku main
 
 ## 📡 API Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/` | Landing page |
-| GET | `/dashboard` | Main dashboard |
-| GET | `/signup` | Signup form |
-| GET | `/optimize` | GBP Optimizer tool |
-| POST | `/api/signup` | Create user account |
-| POST | `/api/optimize` | Run GBP analysis |
-| POST | `/api/send-request` | Send review request SMS |
-| POST | `/api/webhook/review` | Receive review webhook |
-| GET | `/api/feed` | Activity feed |
-| GET | `/api/leads` | View all leads |
-| GET | `/health` | Health check |
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/` | — | Landing page |
+| GET | `/dashboard` | ✓ | Main dashboard |
+| GET | `/signup` | — | Signup form |
+| GET | `/starter` | ✓ | GBP Starter (guided setup) |
+| GET | `/optimize` | ✓ | GBP Optimizer tool |
+| GET | `/insights` | ✓ | AI Growth Coach |
+| POST | `/api/auth/signup` | — | Create user account |
+| POST | `/api/auth/login` | — | Log in |
+| POST | `/api/gbp-starter` | ✓ | Build a GBP launch plan |
+| POST | `/api/optimize` | — | Run GBP audit |
+| POST | `/api/send-request` | ✓ | Send review request SMS |
+| POST | `/api/webhook/review` | ✓ | Receive review webhook |
+| GET | `/api/feed` | ✓ | Activity feed |
+| GET | `/api/leads` | — | View all leads |
+| GET | `/health` | — | Health check |
 
 ## 🔑 API Keys
 
@@ -111,10 +122,13 @@ git push heroku main
 │   ├── index.html         # Landing page
 │   ├── dashboard.html     # Main dashboard
 │   ├── signup.html        # Signup form
+│   ├── starter.html       # GBP Starter (guided setup)
 │   ├── optimize.html      # GBP Optimizer
 │   ├── style.css          # Dashboard styles
 │   ├── landing.css        # Landing styles
 │   ├── signup.css         # Signup styles
+│   ├── starter.css        # Starter styles
+│   ├── starter.js         # Starter logic
 │   ├── optimize.css       # Optimizer styles
 │   └── optimize.js        # Optimizer logic
 └── DEPLOY.md              # Detailed deployment guide
@@ -122,8 +136,8 @@ git push heroku main
 
 ## 🎯 Roadmap
 
-- [ ] User authentication system
-- [ ] Database (PostgreSQL via Supabase)
+- [x] User authentication system
+- [x] Database (SQLite via better-sqlite3)
 - [ ] Multi-user teams
 - [ ] Content calendar scheduling
 - [ ] Analytics dashboard
