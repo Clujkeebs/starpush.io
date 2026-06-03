@@ -123,7 +123,7 @@ document.getElementById('download-btn').addEventListener('click', () => {
     ...((p.launchChecklist || []).map(t => `  [ ] ${t}`)),
     '',
     `${'─'.repeat(60)}`,
-    `Powered by Starpush · starpush.io`,
+    `Powered by starpush.io · by clujkeebs`,
   ];
 
   const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
