@@ -865,6 +865,9 @@ app.post('/api/generate-posts', requireAuth, async (req, res) => {
   if (!trade || !city) return res.status(400).json({ error: 'trade and city are required.' });
 
   try {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Anthropic API key not configured.');
+    const Anthropic = require('@anthropic-ai/sdk');
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const msg = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 900,
@@ -935,7 +938,8 @@ app.post('/api/demo-reply', async (req, res) => {
     const reply = await generateAIReply(reviewText.trim(), trade, city, rating || 5);
     res.json({ reply });
   } catch (err) {
-    res.status(500).json({ error: friendlyAIError(err) });
+    console.error('[DemoReply]', err.message);
+    res.status(502).json({ error: friendlyAIError(err) });
   }
 });
 
