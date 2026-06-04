@@ -5,7 +5,7 @@
  *
  * Configure via env vars:
  *   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS
- *   SMTP_FROM  (defaults to "Starpush <hello@starpush.io>")
+ *   SMTP_FROM  (defaults to "Starpush <clujkeebs@aol.com>")
  *
  * Works with:
  *   - Gmail: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587
@@ -35,7 +35,7 @@ const transporter = isConfigured
     })
   : null;
 
-const FROM = process.env.SMTP_FROM || 'Starpush <hello@starpush.io>';
+const FROM = process.env.SMTP_FROM || 'Starpush <clujkeebs@aol.com>';
 
 /**
  * Send an email. Falls back to console.log if SMTP is not configured.
@@ -79,8 +79,8 @@ function sendPasswordReset(email, resetUrl) {
           </p>
           <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0" />
           <p style="color:#9ca3af;font-size:12px;margin:0">
-            Starpush · <a href="https://starpush.io" style="color:#6b7280">starpush.io</a> ·
-            <a href="mailto:hello@starpush.io" style="color:#6b7280">hello@starpush.io</a>
+            starpush.io by clujkeebs · <a href="https://starpush.io" style="color:#6b7280">starpush.io</a> ·
+            <a href="mailto:clujkeebs@aol.com" style="color:#6b7280">clujkeebs@aol.com</a>
           </p>
         </div>
       </div>
@@ -120,8 +120,8 @@ function sendWelcome(email, name) {
           </p>
           <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0" />
           <p style="color:#9ca3af;font-size:12px;margin:0">
-            Starpush · <a href="https://starpush.io" style="color:#6b7280">starpush.io</a> ·
-            <a href="mailto:hello@starpush.io" style="color:#6b7280">hello@starpush.io</a>
+            starpush.io by clujkeebs · <a href="https://starpush.io" style="color:#6b7280">starpush.io</a> ·
+            <a href="mailto:clujkeebs@aol.com" style="color:#6b7280">clujkeebs@aol.com</a>
           </p>
         </div>
       </div>

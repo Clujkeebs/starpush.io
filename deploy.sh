@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ReviewPilot Automated Deployment Script
+# starpush.io Automated Deployment Script
 # Usage: ./deploy.sh [github-username] [anthropic-api-key]
 
 set -e
@@ -8,7 +8,7 @@ set -e
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-echo "🚀 ReviewPilot Deployment Script"
+echo "🚀 starpush.io Deployment Script"
 echo "=================================="
 echo ""
 
@@ -37,10 +37,10 @@ echo ""
 # Step 1: Prepare git repo
 echo "📦 Preparing Git repository..."
 git add .
-git commit -m "Deploy ReviewPilot $(date +%Y-%m-%d)" 2>/dev/null || echo "  (No changes to commit)"
+git commit -m "Deploy starpush.io $(date +%Y-%m-%d)" 2>/dev/null || echo "  (No changes to commit)"
 
 # Step 2: Create GitHub repo URL
-REPO_URL="https://github.com/$GITHUB_USERNAME/reviewpilot.git"
+REPO_URL="https://github.com/$GITHUB_USERNAME/starpush.io.git"
 echo "🔗 Repository URL: $REPO_URL"
 
 # Step 3: Update remote
@@ -55,7 +55,7 @@ git push -u origin main || {
   echo ""
   echo "Option 1: Use GitHub CLI (recommended)"
   echo "  gh auth login"
-  echo "  gh repo create reviewpilot --public --source=. --push"
+  echo "  gh repo create starpush.io --public --source=. --push"
   echo ""
   echo "Option 2: Create repo manually at https://github.com/new"
   echo "  Then run: git push -u origin main"
@@ -69,7 +69,7 @@ echo ""
 echo "Next steps to deploy on Render:"
 echo "1. Go to https://dashboard.render.com/"
 echo "2. Click 'New +' → 'Web Service'"
-echo "3. Select your 'reviewpilot' repository"
+echo "3. Select your 'starpush.io' repository"
 echo "4. Set environment variables:"
 echo "   ANTHROPIC_API_KEY = $ANTHROPIC_API_KEY"
 echo "   NODE_ENV = production"

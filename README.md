@@ -1,4 +1,4 @@
-# Starpush 📍
+# starpush.io by clujkeebs 📍
 
 A B2B local SEO & review automation platform for service businesses. Automate Google reviews, generate AI replies, and optimize your Google Business Profile.
 
@@ -179,5 +179,5 @@ MIT
 
 ## 🆘 Support
 
-Email: support@starpush.local  
+Email: clujkeebs@aol.com  
 Docs: See `DEPLOY.md` for deployment help
