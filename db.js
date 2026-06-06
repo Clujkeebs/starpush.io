@@ -132,7 +132,8 @@ const stmts = {
   // Users
   getUserById:         sqlite.prepare('SELECT * FROM users WHERE id = ?'),
   getUserByEmail:      sqlite.prepare('SELECT * FROM users WHERE email = ?'),
-  getUserByResetToken: sqlite.prepare('SELECT * FROM users WHERE reset_token = ?'),
+  getUserByResetToken:       sqlite.prepare('SELECT * FROM users WHERE reset_token = ?'),
+  getUserByStripeCustomerId: sqlite.prepare('SELECT * FROM users WHERE stripe_customer_id = ?'),
   getAllUsers:     sqlite.prepare('SELECT * FROM users ORDER BY created_at DESC'),
   insertUser:     sqlite.prepare(`
     INSERT INTO users (id, name, email, password_hash, business_name, trade, phone,
@@ -200,6 +201,10 @@ db.getUserByEmail = function getUserByEmail(email) {
 
 db.getUserByResetToken = function getUserByResetToken(token) {
   return rowToCamel(stmts.getUserByResetToken.get(token));
+};
+
+db.getUserByStripeCustomerId = function getUserByStripeCustomerId(customerId) {
+  return rowToCamel(stmts.getUserByStripeCustomerId.get(customerId));
 };
 
 db.createUser = function createUser(data) {

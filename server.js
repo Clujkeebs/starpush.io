@@ -26,6 +26,15 @@ app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── App URL helper — uses APP_URL env unless it's a localhost/render URL ───────
+function getAppUrl(req) {
+  const configured = process.env.APP_URL || '';
+  const isPlaceholder = !configured || configured.includes('localhost') || configured.includes('onrender.com');
+  if (!isPlaceholder) return configured;
+  const proto = req.get('x-forwarded-proto') || req.protocol;
+  return `${proto}://${req.get('host')}`;
+}
+
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 function signToken(user) {
   return jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '30d' });
@@ -329,8 +338,8 @@ app.post('/api/auth/signup', async (req, res) => {
           customer_email: user.email,
           line_items: [{ price: priceId, quantity: 1 }],
           subscription_data: { trial_period_days: 14 },
-          success_url: `${process.env.APP_URL || 'http://localhost:3000'}/dashboard?welcome=1`,
-          cancel_url:  `${process.env.APP_URL || 'http://localhost:3000'}/pricing`,
+          success_url: `${getAppUrl(req)}/dashboard?welcome=1`,
+          cancel_url:  `${getAppUrl(req)}/pricing`,
           metadata: { userId: user.id },
         });
         return res.json({ success: true, stripeUrl: session.url });
@@ -416,7 +425,7 @@ app.post('/api/auth/forgot-password', (req, res) => {
   if (user) {
     const token = require('crypto').randomBytes(32).toString('hex');
     db.updateUser(user.id, { resetToken: token, resetExpires: String(Date.now() + 60 * 60 * 1000) });
-    const url = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+    const url = `${getAppUrl(req)}/reset-password?token=${token}`;
     console.log(`[Password Reset] ${user.email} → ${url}`);
     mailer.sendPasswordReset(user.email, url).catch(() => {});
   }
@@ -464,8 +473,8 @@ app.post('/api/stripe/create-checkout', requireAuth, async (req, res) => {
       customer_email: req.user.email,
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: { trial_period_days: 14 },
-      success_url: `${process.env.APP_URL || 'http://localhost:3000'}/dashboard?upgraded=1`,
-      cancel_url:  `${process.env.APP_URL || 'http://localhost:3000'}/pricing`,
+      success_url: `${getAppUrl(req)}/dashboard?upgraded=1`,
+      cancel_url:  `${getAppUrl(req)}/pricing`,
       metadata: { userId: req.user.id },
     });
     res.json({ url: session.url });
@@ -497,9 +506,7 @@ app.post('/api/stripe/webhook', (req, res) => {
   }
   if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
     const sub = event.data.object;
-    // Find user by stripe customer ID
-    const allUsers = db.getAllUsers();
-    const user = allUsers.find(u => u.stripeCustomerId === sub.customer);
+    const user = db.getUserByStripeCustomerId(sub.customer);
     if (user) {
       db.updateUser(user.id, { subscriptionStatus: sub.status });
     }
@@ -513,7 +520,7 @@ app.get('/api/stripe/portal', requireAuth, async (req, res) => {
   try {
     const session = await stripe.billingPortal.sessions.create({
       customer: req.user.stripeCustomerId,
-      return_url: `${process.env.APP_URL || 'http://localhost:3000'}/dashboard`,
+      return_url: `${getAppUrl(req)}/dashboard`,
     });
     res.redirect(session.url);
   } catch (err) {
@@ -1017,6 +1024,13 @@ app.get('/health',              (_req, res) => res.json({ status: 'ok', ts: new 
 app.use((_req, res) => {
   res.status(404).send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Page Not Found — Starpush</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"/><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Inter',system-ui,sans-serif;background:#f3f4f6;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}.wrap{text-align:center;max-width:440px}.ico{font-size:64px;margin-bottom:16px}h1{font-size:28px;font-weight:800;color:#0f2340;margin-bottom:8px}p{font-size:15px;color:#6b7280;line-height:1.6;margin-bottom:24px}a{display:inline-block;padding:12px 28px;background:#0f2340;color:#fff;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px;transition:background .15s}a:hover{background:#163352}</style></head><body><div class="wrap"><div class="ico">🚀</div><h1>Page not found</h1><p>The page you're looking for doesn't exist or has been moved. Let's get you back on track.</p><a href="/">← Back to Starpush</a></div></body></html>`);
 });
+
+// ── Keep-alive ping (prevents Render free-tier cold starts) ──────────────────
+if (process.env.NODE_ENV === 'production') {
+  setInterval(() => {
+    fetch(`http://localhost:${PORT}/health`).catch(() => {});
+  }, 10 * 60 * 1000); // every 10 minutes
+}
 
 // ── Automated follow-up scheduler ─────────────────────────────────────────────
 // Every 5 minutes: send a single follow-up SMS to customers who got the initial
