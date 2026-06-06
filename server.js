@@ -93,14 +93,16 @@ async function generateAIReply(reviewText, service, city, rating) {
 // ── Friendly error converter for Anthropic/AI errors ─────────────────────────
 function friendlyAIError(err) {
   const msg = err.message || '';
+  // Our own guard for a totally missing key — check first so it isn't masked below.
+  if (msg.includes('not configured'))
+    return msg; // already friendly
+  // A key was sent but rejected by Anthropic (wrong, expired, or revoked).
   if (msg.includes('authentication_error') || msg.includes('invalid x-api-key'))
-    return 'AI service is not configured yet. Add your ANTHROPIC_API_KEY to get started.';
+    return 'AI key was rejected. Double-check your ANTHROPIC_API_KEY is correct and active.';
   if (msg.includes('rate_limit'))
     return 'AI service is busy right now — please try again in a moment.';
   if (msg.includes('overloaded'))
     return 'AI service is temporarily overloaded. Try again in 30 seconds.';
-  if (msg.includes('not configured'))
-    return msg; // already friendly
   return 'AI service returned an unexpected error. Please try again.';
 }
 

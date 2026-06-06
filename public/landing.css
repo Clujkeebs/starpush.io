@@ -84,7 +84,7 @@ img { display: block; max-width: 100%; }
 .nav-logo-text { display: flex; flex-direction: column; line-height: 1; }
 .nav-logo-name { font-size: 17px; font-weight: 800; color: var(--navy); letter-spacing: -.3px; text-decoration: none; transition: color .15s; }
 .nav-logo-name:hover { color: var(--navy-lt); }
-.nav-logo-by   { font-size: 9px; font-weight: 500; color: var(--amber-dk); letter-spacing: .04em; text-transform: uppercase; margin-top: 1px; text-decoration: none; transition: color .15s; }
+.nav-logo-by   { font-size: 10.5px; font-weight: 700; color: var(--amber-dk); letter-spacing: .02em; margin-top: 1px; text-decoration: none; transition: color .15s; }
 a.nav-logo-by:hover { color: var(--amber); }
 
 /* Links */
