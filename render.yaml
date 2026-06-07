@@ -2,38 +2,54 @@ services:
   - type: web
     name: starpush
     runtime: node
-    plan: free
+    plan: starter
     buildCommand: npm install
     startCommand: node server.js
     healthCheckPath: /health
+
+    # Persistent disk — keeps SQLite data across deploys and restarts
+    disk:
+      name: starpush-db
+      mountPath: /var/data
+      sizeGB: 1
+
     envVars:
       - key: NODE_ENV
         value: production
-      # Set all secrets in the Render dashboard under Environment
+
+      # Persistent disk path for SQLite database
+      - key: DATA_DIR
+        value: /var/data
+
+      # Your custom domain — used for Stripe redirect URLs & password-reset emails
+      - key: APP_URL
+        value: https://starpush.io
+
+      # Auth — generate with: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+      - key: JWT_SECRET
+        sync: false
+
+      # Admin API key — any secret string you choose
+      - key: ADMIN_KEY
+        sync: false
+
+      # Twilio SMS
       - key: TWILIO_ACCOUNT_SID
         sync: false
       - key: TWILIO_AUTH_TOKEN
         sync: false
       - key: TWILIO_PHONE_NUMBER
         sync: false
+
+      # Default Google review link (used in SMS when user hasn't set one in their profile)
+      - key: DEFAULT_REVIEW_LINK
+        sync: false
+
+      # Anthropic AI
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: JWT_SECRET
-        sync: false
-      - key: ADMIN_KEY
-        sync: false
-      - key: APP_URL
-        sync: false
-      # Optional: email (welcome + password reset)
-      - key: SMTP_HOST
-        sync: false
-      - key: SMTP_PORT
-        sync: false
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
-      # Optional: Stripe
+
+      # Stripe payments
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_PUBLISHABLE_KEY
@@ -45,4 +61,16 @@ services:
       - key: STRIPE_GROWTH_PRICE_ID
         sync: false
       - key: STRIPE_PRO_PRICE_ID
+        sync: false
+
+      # Email (optional — welcome emails & password resets)
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
         sync: false
