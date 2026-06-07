@@ -137,7 +137,8 @@ a.signup-logo-by:hover { color: #fbbf24; }
 .sf-inp:focus {
   border-color: var(--navy);
   background: var(--white);
-  box-shadow: 0 0 0 3px rgba(13,33,55,.1);
+  box-shadow: 0 0 0 3px rgba(13,33,55,.12), 0 1px 3px rgba(0,0,0,.05);
+  transform: none;
 }
 .sf-inp.inp-error {
   border-color: var(--red);
@@ -159,11 +160,11 @@ a.signup-logo-by:hover { color: #fbbf24; }
 /* ── Submit ──────────────────────────────────────────────────────────────── */
 .sf-submit {
   width: 100%;
-  padding: 13px 20px;
-  background: var(--navy);
+  padding: 14px 20px;
+  background: linear-gradient(135deg, var(--navy) 0%, var(--navy-lt) 100%);
   color: var(--white);
   border: none;
-  border-radius: 9px;
+  border-radius: 10px;
   font-family: inherit;
   font-size: 15px;
   font-weight: 700;
@@ -173,14 +174,16 @@ a.signup-logo-by:hover { color: #fbbf24; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 4px 16px rgba(13,33,55,.25);
+  box-shadow: 0 4px 18px rgba(13,33,55,.3), 0 1px 3px rgba(0,0,0,.1);
   margin-bottom: 14px;
+  letter-spacing: -.1px;
 }
 .sf-submit:hover:not(:disabled) {
-  background: var(--navy-lt);
-  transform: translateY(-1px);
-  box-shadow: 0 6px 20px rgba(13,33,55,.3);
+  background: linear-gradient(135deg, var(--navy-lt) 0%, var(--navy) 100%);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(13,33,55,.35);
 }
+.sf-submit:active:not(:disabled) { transform: translateY(0) scale(.98); }
 .sf-submit:disabled { opacity: .6; cursor: not-allowed; }
 
 .sf-spinner {
@@ -202,7 +205,9 @@ a.signup-logo-by:hover { color: #fbbf24; }
 
 /* ── Right: proof col ────────────────────────────────────────────────────── */
 .signup-proof-col {
-  background: linear-gradient(150deg, var(--navy-dk) 0%, var(--navy) 60%, var(--navy-lt) 100%);
+  background:
+    radial-gradient(ellipse 70% 60% at 30% 70%, rgba(79,70,229,.25) 0%, transparent 60%),
+    linear-gradient(150deg, var(--navy-dk) 0%, var(--navy) 60%, var(--navy-lt) 100%);
   display: flex;
   align-items: center;
   justify-content: center;

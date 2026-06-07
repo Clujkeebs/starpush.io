@@ -215,17 +215,19 @@
         a.textContent = 'Upgrade Now →';
         actions.appendChild(a);
       }
-      const portal = document.createElement('a');
-      portal.href = '/api/stripe/portal';
-      portal.className = 'acct-btn acct-btn-ghost';
-      portal.textContent = 'Manage Subscription';
-      actions.appendChild(portal);
+      if (isActive || u.stripeCustomerId) {
+        const portal = document.createElement('a');
+        portal.href = '/api/stripe/portal';
+        portal.className = 'acct-btn acct-btn-ghost';
+        portal.textContent = 'Manage Subscription';
+        actions.appendChild(portal);
 
-      const cancel = document.createElement('a');
-      cancel.href = '/api/stripe/portal';
-      cancel.className = 'acct-btn acct-btn-link';
-      cancel.textContent = 'Cancel Subscription';
-      actions.appendChild(cancel);
+        const cancel = document.createElement('a');
+        cancel.href = '/api/stripe/portal';
+        cancel.className = 'acct-btn acct-btn-link';
+        cancel.textContent = 'Cancel Subscription';
+        actions.appendChild(cancel);
+      }
     }
     loadMe();
 

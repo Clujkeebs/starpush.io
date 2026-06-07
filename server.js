@@ -953,7 +953,7 @@ app.post('/api/demo-reply', async (req, res) => {
     res.json({ reply });
   } catch (err) {
     console.error('[DemoReply]', err.message);
-    res.status(502).json({ error: friendlyAIError(err) });
+    res.status(502).json({ error: 'AI service is temporarily unavailable — please try again in a moment.' });
   }
 });
 

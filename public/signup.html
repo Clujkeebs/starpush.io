@@ -160,8 +160,12 @@
     const plan   = params.get('plan');
     if (plan) {
       const label = document.querySelector('.signup-sub');
-      if (label && plan === 'pro') {
-        label.textContent = 'Pro plan selected. No credit card required. Set up in 10 minutes.';
+      if (label) {
+        const planNames = { starter: 'Starter', growth: 'Growth', pro: 'Pro' };
+        const planName  = planNames[plan];
+        if (planName) {
+          label.textContent = `${planName} plan selected · 14-day free trial included · No credit card now.`;
+        }
       }
     }
     const prefillEmail = params.get('email');
