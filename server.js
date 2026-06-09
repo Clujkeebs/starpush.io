@@ -365,7 +365,9 @@ app.post('/api/auth/login', async (req, res) => {
 
   const token = signToken(user);
   res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
-  res.json({ success: true, redirect: req.body.next || '/dashboard' });
+  const next = req.body.next;
+  const redirect = (next && /^\/[^/]/.test(next)) ? next : '/dashboard';
+  res.json({ success: true, redirect });
 });
 
 // POST /api/auth/logout
@@ -1036,22 +1038,24 @@ if (process.env.NODE_ENV === 'production') {
 // Every 5 minutes: send a single follow-up SMS to customers who got the initial
 // SMS at least 3 days ago and haven't reviewed yet (max 2 total SMS per customer).
 setInterval(async () => {
-  const due = db.getFollowUpDue();
-  for (const c of due) {
-    try {
-      const user = db.getUser(c.userId);
-      if (!user) continue;
-      const reviewLink = process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';
-      const body = `Hi ${c.name}, just a friendly reminder — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${reviewLink}. Thanks!`;
-      await sendTwilioSMS(c.phone, body);
-      db.updateCustomer(c.id, {
-        lastSmsAt: new Date().toISOString(),
-        smsCount: (c.smsCount || 1) + 1,
-        status: 'followup_sent',
-      });
-      console.log(`[Auto-Followup] sent to ${c.name} (${c.phone})`);
-    } catch (err) { console.error('[Auto-Followup]', err.message); }
-  }
+  try {
+    const due = db.getFollowUpDue();
+    for (const c of due) {
+      try {
+        const user = db.getUser(c.userId);
+        if (!user) continue;
+        const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';
+        const body = `Hi ${c.name}, just a friendly reminder — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${reviewLink}. Thanks!`;
+        db.updateCustomer(c.id, {
+          lastSmsAt: new Date().toISOString(),
+          smsCount: (c.smsCount || 1) + 1,
+          status: 'followup_sent',
+        });
+        await sendTwilioSMS(c.phone, body);
+        console.log(`[Auto-Followup] sent to ${c.name} (${c.phone})`);
+      } catch (err) { console.error('[Auto-Followup] customer error:', err.message); }
+    }
+  } catch (err) { console.error('[Auto-Followup] scheduler error:', err.message); }
 }, 5 * 60 * 1000);
 
 // ── Start ─────────────────────────────────────────────────────────────────────

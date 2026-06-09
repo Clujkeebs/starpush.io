@@ -80,10 +80,12 @@ try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
 // ── Indexes ──────────────────────────────────────────────────────────────────
 
 sqlite.exec(`
-  CREATE INDEX IF NOT EXISTS idx_users_email        ON users(email);
-  CREATE INDEX IF NOT EXISTS idx_customers_user_id   ON customers(user_id);
-  CREATE INDEX IF NOT EXISTS idx_activity_user_id    ON activity_feed(user_id);
-  CREATE INDEX IF NOT EXISTS idx_audit_leads_email   ON audit_leads(email);
+  CREATE INDEX IF NOT EXISTS idx_users_email             ON users(email);
+  CREATE INDEX IF NOT EXISTS idx_users_stripe_customer   ON users(stripe_customer_id);
+  CREATE INDEX IF NOT EXISTS idx_users_stripe_sub        ON users(stripe_subscription_id);
+  CREATE INDEX IF NOT EXISTS idx_customers_user_id       ON customers(user_id);
+  CREATE INDEX IF NOT EXISTS idx_activity_user_ts        ON activity_feed(user_id, timestamp DESC);
+  CREATE INDEX IF NOT EXISTS idx_audit_leads_email       ON audit_leads(email);
 `);
 
 // ── Case conversion helpers ──────────────────────────────────────────────────
