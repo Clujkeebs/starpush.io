@@ -129,4 +129,46 @@ function sendWelcome(email, name) {
   });
 }
 
-module.exports = { sendMail, sendPasswordReset, sendWelcome };
+/**
+ * Send a trial expiry reminder (day 7 or day 1 before end).
+ */
+function sendTrialReminder(email, name, daysLeft) {
+  const first = name.split(' ')[0];
+  const urgent = daysLeft <= 1;
+  const subject = urgent
+    ? `⏰ Your Starpush trial expires tomorrow`
+    : `Your Starpush trial ends in ${daysLeft} days — don't lose your progress`;
+  return sendMail({
+    to: email,
+    subject,
+    text: `Hi ${first},\n\nYour Starpush free trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Upgrade now to keep your customer list, SMS automation, and AI replies.\n\nhttps://starpush.io/upgrade\n\n— The Starpush Team`,
+    html: `
+      <div style="font-family:Inter,system-ui,sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;background:#f9fafb">
+        <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e5e7eb">
+          <div style="font-size:20px;font-weight:800;color:#0d2137;margin-bottom:8px">🚀 Starpush</div>
+          <h1 style="font-size:22px;font-weight:700;color:#111827;margin:0 0 12px">
+            ${urgent ? '⏰ Last day of your free trial' : `${daysLeft} days left in your free trial`}
+          </h1>
+          <p style="color:#374151;margin:0 0 16px;line-height:1.6">
+            Hi ${first}, your Starpush trial ends in <strong>${daysLeft} day${daysLeft === 1 ? '' : 's'}</strong>.
+            Upgrade now to keep everything you've built — your customer list, SMS automation, AI replies, and review momentum.
+          </p>
+          <a href="https://starpush.io/upgrade"
+             style="display:inline-block;background:${urgent ? '#dc2626' : '#4f46e5'};color:#fff;font-weight:700;font-size:15px;padding:14px 28px;border-radius:8px;text-decoration:none;margin-bottom:24px">
+            Upgrade now →
+          </a>
+          <p style="color:#9ca3af;font-size:13px;margin:0;line-height:1.6">
+            Questions? Reply to this email — I read every one personally.
+          </p>
+          <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0" />
+          <p style="color:#9ca3af;font-size:12px;margin:0">
+            starpush.io by clujkeebs · <a href="https://starpush.io" style="color:#6b7280">starpush.io</a> ·
+            <a href="mailto:clujkeebs@aol.com" style="color:#6b7280">clujkeebs@aol.com</a>
+          </p>
+        </div>
+      </div>
+    `,
+  });
+}
+
+module.exports = { sendMail, sendPasswordReset, sendWelcome, sendTrialReminder };

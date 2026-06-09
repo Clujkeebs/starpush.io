@@ -1058,6 +1058,33 @@ setInterval(async () => {
   } catch (err) { console.error('[Auto-Followup] scheduler error:', err.message); }
 }, 5 * 60 * 1000);
 
+// ── Trial reminder emails (runs every 6 hours) ───────────────────────────────
+// Sends a reminder at exactly 7 days left and 1 day left.
+// Uses a 6-hour window so restarts don't cause duplicates.
+setInterval(async () => {
+  try {
+    const users = db.getAllUsers();
+    const now = Date.now();
+    for (const u of users) {
+      if (u.subscriptionStatus === 'active' || u.plan !== 'trial') continue;
+      const msLeft = new Date(u.trialEndsAt).getTime() - now;
+      if (msLeft <= 0) continue;
+      const hoursLeft = msLeft / (60 * 60 * 1000);
+      // Fire the 7-day reminder in the window 7d to 7d+6h after trial start
+      const is7Day = hoursLeft > 6 * 24 && hoursLeft <= 7 * 24;
+      // Fire the 1-day reminder in the window 0d+6h to 1d
+      const is1Day = hoursLeft > 6 && hoursLeft <= 24;
+      if (is7Day) {
+        mailer.sendTrialReminder(u.email, u.name, 7).catch(() => {});
+        console.log(`[Trial Reminder] 7d reminder → ${u.email}`);
+      } else if (is1Day) {
+        mailer.sendTrialReminder(u.email, u.name, 1).catch(() => {});
+        console.log(`[Trial Reminder] 1d reminder → ${u.email}`);
+      }
+    }
+  } catch (err) { console.error('[Trial Reminder] scheduler error:', err.message); }
+}, 6 * 60 * 60 * 1000);
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n  🚀 Starpush running → http://localhost:${PORT}\n`);

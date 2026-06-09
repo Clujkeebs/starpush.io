@@ -616,12 +616,20 @@
           if (daysLeft <= 0) {
             // Trial expired — block dashboard
             expired.classList.remove('hidden');
-          } else if (daysLeft <= 3 && !dismissed) {
+          } else if (!dismissed) {
             banner.classList.remove('hidden');
-            banner.classList.add('warn');
-            bIcon.textContent = '⏰';
-            bText.textContent = `Your free trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}. Upgrade now to keep your customer list and automation running.`;
-            bBtn.textContent  = 'Upgrade Now →';
+            if (daysLeft <= 3) {
+              banner.classList.add('warn');
+              bIcon.textContent = '⏰';
+              bText.textContent = `Your free trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'} — upgrade now to keep your customer list and automation.`;
+              bBtn.href = '/upgrade';
+              bBtn.textContent = 'Upgrade Now →';
+            } else {
+              bIcon.textContent = '🎁';
+              bText.textContent = `Free trial — ${daysLeft} day${daysLeft === 1 ? '' : 's'} left. Lock in your plan before it ends.`;
+              bBtn.href = '/upgrade';
+              bBtn.textContent = 'Choose a Plan →';
+            }
           }
         }
         bX?.addEventListener('click', () => {
