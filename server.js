@@ -340,7 +340,7 @@ app.post('/api/auth/signup', async (req, res) => {
           subscription_data: { trial_period_days: 14 },
           success_url: `${getAppUrl(req)}/dashboard?welcome=1`,
           cancel_url:  `${getAppUrl(req)}/pricing`,
-          metadata: { userId: user.id },
+          metadata: { userId: user.id, plan: req.body.plan },
         });
         return res.json({ success: true, stripeUrl: session.url });
       } catch (err) {
@@ -478,7 +478,7 @@ app.post('/api/stripe/create-checkout', requireAuth, async (req, res) => {
       subscription_data: { trial_period_days: 14 },
       success_url: `${getAppUrl(req)}/dashboard?upgraded=1`,
       cancel_url:  `${getAppUrl(req)}/pricing`,
-      metadata: { userId: req.user.id },
+      metadata: { userId: req.user.id, plan },
     });
     res.json({ url: session.url });
   } catch (err) {
@@ -500,11 +500,13 @@ app.post('/api/stripe/webhook', (req, res) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     if (session.metadata?.userId) {
-      db.updateUser(session.metadata.userId, {
+      const update = {
         stripeCustomerId: session.customer,
         stripeSubscriptionId: session.subscription,
         subscriptionStatus: 'active',
-      });
+      };
+      if (session.metadata.plan) update.plan = session.metadata.plan;
+      db.updateUser(session.metadata.userId, update);
     }
   }
   if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
