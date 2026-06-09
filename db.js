@@ -75,6 +75,7 @@ sqlite.exec(`
 try { sqlite.exec('ALTER TABLE users ADD COLUMN reset_token TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN reset_expires TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN google_review_link TEXT'); } catch {}
+try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_template TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
 
 // ── Indexes ──────────────────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ const SNAKE_TO_CAMEL = {
   reset_token:            'resetToken',
   reset_expires:          'resetExpires',
   google_review_link:     'googleReviewLink',
+  sms_template:           'smsTemplate',
   created_at:             'createdAt',
   user_id:                'userId',
   added_at:               'addedAt',

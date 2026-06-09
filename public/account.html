@@ -130,6 +130,32 @@
         </form>
       </section>
 
+      <!-- ── Custom SMS Template ── -->
+      <section class="acct-card">
+        <h2 class="acct-card-title">Custom SMS Message</h2>
+        <p class="acct-card-sub">Write your own review request. Use <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{name}</code>, <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{service}</code>, and <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{reviewLink}</code> as placeholders. Once saved, a "Custom ✏️" option appears in the dashboard message picker.</p>
+
+        <form id="template-form">
+          <div class="acct-field">
+            <label class="acct-lbl" for="p-sms-template">Your Custom Message</label>
+            <textarea class="acct-inp" id="p-sms-template" rows="3" maxlength="320"
+              placeholder="Hi {name}, thanks for the {service} today! We'd love a quick Google review — 30 seconds: {reviewLink} 🙏"
+              style="resize:vertical;font-family:inherit"></textarea>
+            <p class="acct-field-hint" id="template-chars" style="text-align:right;margin-top:4px">0 / 320 characters</p>
+            <p class="acct-field-hint">Under 160 chars = 1 SMS. Friendly and personal converts better than formal.</p>
+          </div>
+
+          <div class="acct-field" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-bottom:16px">
+            <p class="acct-lbl" style="margin-bottom:6px">Preview with sample values</p>
+            <p id="template-preview" style="font-size:13px;color:#374151;line-height:1.6;margin:0">Enter your message above to see a preview.</p>
+          </div>
+
+          <button class="acct-btn acct-btn-primary" type="submit" id="template-save">Save Template</button>
+          <button class="acct-btn acct-btn-ghost" type="button" id="template-clear" style="margin-left:8px">Clear (use built-in styles)</button>
+          <span class="acct-msg" id="template-msg"></span>
+        </form>
+      </section>
+
       <!-- ── SMS Service ── -->
       <section class="acct-card">
         <h2 class="acct-card-title">SMS Service</h2>
@@ -183,6 +209,8 @@
       document.getElementById('p-trade').value       = u.trade || '';
       document.getElementById('p-phone').value       = u.phone || '';
       document.getElementById('p-review-link').value = u.googleReviewLink || '';
+      document.getElementById('p-sms-template').value = u.smsTemplate || '';
+      updateTemplatePreview();
 
       // Subscription
       const planEl   = document.getElementById('sub-plan');
@@ -312,6 +340,60 @@
     document.getElementById('logout-btn')?.addEventListener('click', async () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       window.location.href = '/';
+    });
+
+    // Custom SMS template
+    function updateTemplatePreview() {
+      const tpl  = document.getElementById('p-sms-template').value.trim();
+      const prev = document.getElementById('template-preview');
+      const chars = document.getElementById('template-chars');
+      if (chars) chars.textContent = `${tpl.length} / 320 characters`;
+      if (!prev) return;
+      if (!tpl) { prev.textContent = 'Enter your message above to see a preview.'; prev.style.color = '#9ca3af'; return; }
+      const preview = tpl.replace(/\{name\}/gi, 'John Smith')
+                         .replace(/\{service\}/gi, 'AC Repair')
+                         .replace(/\{reviewLink\}/gi, 'https://g.page/r/your-link')
+                         .replace(/\{link\}/gi, 'https://g.page/r/your-link');
+      prev.textContent = preview;
+      prev.style.color = preview.length > 160 ? '#dc2626' : '#374151';
+    }
+    document.getElementById('p-sms-template')?.addEventListener('input', updateTemplatePreview);
+
+    document.getElementById('template-form')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const btn = document.getElementById('template-save');
+      const msg = document.getElementById('template-msg');
+      btn.disabled = true; btn.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/auth/me', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ smsTemplate: document.getElementById('p-sms-template').value.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to save.');
+        msg.textContent = '✓ Saved — select "Custom ✏️" in the dashboard to use it'; msg.style.color = '#059669';
+      } catch (err) {
+        msg.textContent = err.message; msg.style.color = '#dc2626';
+      } finally {
+        btn.disabled = false; btn.textContent = 'Save Template';
+        setTimeout(() => { msg.textContent = ''; }, 5000);
+      }
+    });
+
+    document.getElementById('template-clear')?.addEventListener('click', async () => {
+      document.getElementById('p-sms-template').value = '';
+      updateTemplatePreview();
+      const msg = document.getElementById('template-msg');
+      const res = await fetch('/api/auth/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ smsTemplate: '' }),
+      });
+      const data = await res.json();
+      if (res.ok) { msg.textContent = '✓ Custom template cleared'; msg.style.color = '#059669'; }
+      else { msg.textContent = data.error || 'Failed'; msg.style.color = '#dc2626'; }
+      setTimeout(() => { msg.textContent = ''; }, 3000);
     });
   </script>
 </body>

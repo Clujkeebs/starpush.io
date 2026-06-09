@@ -78,6 +78,25 @@ const statReplies = document.getElementById('stat-replies');
     set(val) {
       window.__currentUser = val;
       if (val?.trade) renderPicks(val.trade);
+      // Inject "Custom" template chip if user has a saved custom template
+      const chips = document.getElementById('tpl-chips');
+      if (chips) {
+        const existing = chips.querySelector('[data-tpl="custom"]');
+        if (val?.smsTemplate && !existing) {
+          const btn = document.createElement('button');
+          btn.type = 'button'; btn.className = 'tpl-chip'; btn.dataset.tpl = 'custom';
+          btn.textContent = 'Custom ✏️';
+          btn.addEventListener('click', () => {
+            activeTpl = 'custom'; localStorage.setItem('rp_tpl', 'custom');
+            chips.querySelectorAll('.tpl-chip').forEach(c => c.classList.toggle('active', c.dataset.tpl === 'custom'));
+            updateSMSPreview();
+          });
+          chips.appendChild(btn);
+        } else if (!val?.smsTemplate && existing) {
+          existing.remove();
+          if (activeTpl === 'custom') { activeTpl = 'standard'; localStorage.setItem('rp_tpl', 'standard'); }
+        }
+      }
     },
     get() { return window.__currentUser; },
     configurable: true,
@@ -122,6 +141,12 @@ const SMS_TEMPLATES = {
     `Hi ${name}! Quick favour — could you leave us a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`,
   personal: (name, service, link) =>
     `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help us out enormously: ${link} — thanks so much!`,
+  custom: (name, service, link) => {
+    const tpl = window._currentUser?.smsTemplate;
+    if (!tpl) return SMS_TEMPLATES.standard(name, service, link);
+    return tpl.replace(/\{name\}/gi, name).replace(/\{service\}/gi, service)
+              .replace(/\{reviewLink\}/gi, link).replace(/\{link\}/gi, link);
+  },
 };
 
 let activeTpl = localStorage.getItem('rp_tpl') || 'standard';

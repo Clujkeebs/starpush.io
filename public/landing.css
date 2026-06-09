@@ -1731,3 +1731,141 @@ body.has-announce .hero { padding-top: 164px; }
   .roi-results { grid-template-columns: 1fr; }
   body.has-announce .hero { padding-top: 148px; }
 }
+
+/* ── Phone SMS mockup section ────────────────────────────────────────────── */
+.phone-mockup-wrap { perspective: 1200px; }
+
+.phone-mockup {
+  width: 260px;
+  background: #1a1a1a;
+  border-radius: 40px;
+  padding: 14px;
+  box-shadow:
+    0 40px 80px rgba(0,0,0,.35),
+    0 8px 24px rgba(0,0,0,.2),
+    inset 0 1px 0 rgba(255,255,255,.08);
+  position: relative;
+  transform: rotateY(-8deg) rotateX(2deg);
+  transition: transform .4s ease;
+}
+.phone-mockup:hover { transform: rotateY(0deg) rotateX(0deg); }
+
+.phone-notch {
+  width: 80px; height: 22px;
+  background: #1a1a1a;
+  border-radius: 0 0 16px 16px;
+  margin: 0 auto 8px;
+  position: relative; z-index: 2;
+}
+
+.phone-screen {
+  background: #fff;
+  border-radius: 28px;
+  overflow: hidden;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-status-bar {
+  background: #f2f2f7;
+  padding: 6px 16px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  font-weight: 600;
+  color: #1c1c1e;
+}
+
+.phone-sms-header {
+  background: #f2f2f7;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #e5e5ea;
+}
+.phone-sms-avatar {
+  width: 36px; height: 36px;
+  background: linear-gradient(135deg, #0d2137, #163352);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: #fff;
+  flex-shrink: 0;
+}
+
+.phone-sms-body {
+  flex: 1;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #fff;
+}
+
+.phone-bubble {
+  background: #e9e9eb;
+  border-radius: 18px 18px 18px 4px;
+  padding: 10px 13px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1c1c1e;
+  max-width: 85%;
+  align-self: flex-start;
+}
+.phone-link {
+  color: #007aff;
+  font-weight: 600;
+}
+.phone-bubble-time {
+  font-size: 10px;
+  color: #aeaeb2;
+  align-self: flex-start;
+  padding-left: 4px;
+}
+.phone-bubble-time-right {
+  align-self: flex-end;
+  padding-right: 4px;
+  padding-left: 0;
+}
+.phone-reply-bubble {
+  background: #007aff;
+  border-radius: 18px 18px 4px 18px;
+  padding: 10px 13px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #fff;
+  max-width: 80%;
+  align-self: flex-end;
+  margin-top: 8px;
+}
+
+.phone-input-bar {
+  background: #f2f2f7;
+  border-top: 1px solid #e5e5ea;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.phone-input-field {
+  flex: 1;
+  background: #fff;
+  border: 1px solid #e5e5ea;
+  border-radius: 20px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #aeaeb2;
+}
+.phone-send-btn {
+  width: 28px; height: 28px;
+  background: #007aff;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 13px; font-weight: 800;
+}
+
+@media (max-width: 900px) {
+  #see-the-sms .section-inner { grid-template-columns: 1fr !important; }
+  #see-the-sms .section-inner > div:last-child { display: none; }
+}

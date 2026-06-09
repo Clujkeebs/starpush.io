@@ -387,12 +387,13 @@ app.get('/api/auth/me', (req, res) => {
 // PATCH /api/auth/me — update profile
 app.patch('/api/auth/me', requireAuth, (req, res) => {
   const fields = {};
-  const { name, businessName, trade, phone, googleReviewLink } = req.body;
+  const { name, businessName, trade, phone, googleReviewLink, smsTemplate } = req.body;
   if (typeof name === 'string')              fields.name = name.trim();
   if (typeof businessName === 'string')      fields.businessName = businessName.trim();
   if (typeof trade === 'string')             fields.trade = trade.trim();
   if (typeof phone === 'string')             fields.phone = phone.trim();
   if (typeof googleReviewLink === 'string')  fields.googleReviewLink = googleReviewLink.trim();
+  if (typeof smsTemplate === 'string')       fields.smsTemplate = smsTemplate.trim();
   const user = db.updateUser(req.user.id, fields);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const { passwordHash, ...safe } = user;
@@ -536,12 +537,18 @@ app.get('/api/stripe/portal', requireAuth, async (req, res) => {
 
 // POST /api/send-request
 // ── Template builder (shared by send-request and send-bulk) ───────────────
-function buildSMSFromTemplate(tpl, name, service, link) {
+function buildSMSFromTemplate(tpl, name, service, link, customTemplate) {
+  if (tpl === 'custom' && customTemplate) {
+    return customTemplate
+      .replace(/\{name\}/gi, name)
+      .replace(/\{service\}/gi, service)
+      .replace(/\{reviewLink\}/gi, link)
+      .replace(/\{link\}/gi, link);
+  }
   if (tpl === 'brief')
     return `Hi ${name}! Quick favour — could you leave us a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`;
   if (tpl === 'personal')
     return `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help us out enormously: ${link} — thanks so much!`;
-  // default: standard
   return `Hi ${name}, thanks for choosing us for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`;
 }
 
@@ -549,8 +556,8 @@ app.post('/api/send-request', requireAuth, async (req, res) => {
   const { customerName, phone, service, city, reviewLink, template } = req.body;
   if (!customerName || !phone || !service) return res.status(400).json({ error: 'customerName, phone, and service are required.' });
 
-  const link = (reviewLink || '').trim() || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const smsBody = buildSMSFromTemplate(template, customerName.trim(), service.trim(), link);
+  const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const smsBody = buildSMSFromTemplate(template, customerName.trim(), service.trim(), link, req.user.smsTemplate);
 
   const custId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
   const entry = { type: 'sms_sent', customerName: customerName.trim(), phone: phone.trim(), service: service.trim(), city: (city || '').trim(), message: smsBody, status: 'pending', twilioSid: null, error: null, customerId: custId };
@@ -601,7 +608,7 @@ app.post('/api/send-bulk', requireAuth, async (req, res) => {
   if (!service)
     return res.status(400).json({ error: 'service is required.' });
 
-  const link = (reviewLink || '').trim() || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const results = [];
 
   for (const c of customers) {
@@ -609,7 +616,7 @@ app.post('/api/send-bulk', requireAuth, async (req, res) => {
     const phone = (c.phone || '').trim();
     if (!name || !phone) { results.push({ name, phone, status: 'skipped', error: 'missing name or phone' }); continue; }
 
-    const smsBody = buildSMSFromTemplate(template, name, service.trim(), link);
+    const smsBody = buildSMSFromTemplate(template, name, service.trim(), link, req.user.smsTemplate);
     const bulkCustId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
     let twilioOk = false, twilioSid = null, errorMsg = null;
 
@@ -786,7 +793,12 @@ app.get('/api/stats', requireAuth, (req, res) => {
     else if (d > 0) break;
   }
 
-  res.json({ smsSent, reviews, avgRating, replies, reviewsThisWeek, reviewsLastWeek, smsThisWeek, smsLastWeek, conversionRate, streak });
+  const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0,0,0,0);
+  const smsThisMonth = feed.filter(i => i.type === 'sms_sent' && new Date(i.timestamp) >= startOfMonth).length;
+  const planLimits = { trial: 150, starter: 150, growth: 600, pro: Infinity };
+  const smsLimit = planLimits[req.user.plan] ?? 150;
+
+  res.json({ smsSent, reviews, avgRating, replies, reviewsThisWeek, reviewsLastWeek, smsThisWeek, smsLastWeek, conversionRate, streak, smsThisMonth, smsLimit });
 });
 
 // POST /api/webhook/review

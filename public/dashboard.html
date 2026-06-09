@@ -184,6 +184,15 @@
               <button type="button" id="test-link-btn" class="test-link-btn hidden" title="Open your review link to verify it works">🔗 Test</button>
             </label>
             <input class="inp" type="url" id="reviewLink" placeholder="https://g.page/r/…" />
+            <details class="review-link-guide">
+              <summary>📍 How to find your Google review link</summary>
+              <ol>
+                <li>Go to <strong>Google Business Profile</strong> → <a href="https://business.google.com" target="_blank" rel="noopener">business.google.com</a></li>
+                <li>Click <strong>"Ask for reviews"</strong> (top of your dashboard)</li>
+                <li>Copy the short link — it starts with <code>g.page/r/</code></li>
+                <li>Paste it here and save in <a href="/account">Account Settings</a> so it pre-fills every time</li>
+              </ol>
+            </details>
           </div>
 
           <!-- Template picker -->
@@ -217,6 +226,7 @@
             </button>
           </div>
           <p class="sms-timing-hint">⚡ <strong>Pro tip:</strong> Send within 1 hour of closing the job — reviews convert 3× more often.</p>
+          <div id="sms-monthly-usage" style="display:none;margin-top:6px"></div>
         </form>
 
         <!-- Batch mode toggle -->
@@ -697,6 +707,19 @@
             convEl.innerHTML = `${s.conversionRate}%<span style="font-size:10px;font-weight:700;color:${col};display:block;line-height:1">${tag}</span>`;
           }
         }
+        // Monthly SMS usage meter
+        const usageEl = document.getElementById('sms-monthly-usage');
+        if (usageEl && s.smsLimit !== Infinity && s.smsLimit > 0) {
+          const used = s.smsThisMonth || 0;
+          const pct  = Math.min(100, Math.round((used / s.smsLimit) * 100));
+          const col  = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#059669';
+          usageEl.innerHTML = `<span style="font-size:11px;color:${col};font-weight:600">${used} / ${s.smsLimit} SMS this month</span>
+            <div style="height:3px;background:#e5e7eb;border-radius:3px;margin-top:3px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:${col};border-radius:3px;transition:width .4s"></div>
+            </div>`;
+          usageEl.style.display = 'block';
+        }
+
         const streakEl = document.getElementById('stat-streak');
         if (streakEl) {
           const st = s.streak || 0;
