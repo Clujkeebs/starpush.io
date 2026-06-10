@@ -133,7 +133,7 @@
       <!-- ── Custom SMS Template ── -->
       <section class="acct-card">
         <h2 class="acct-card-title">Custom SMS Message</h2>
-        <p class="acct-card-sub">Write your own review request. Use <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{name}</code>, <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{service}</code>, and <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{reviewLink}</code> as placeholders. Once saved, a "Custom ✏️" option appears in the dashboard message picker.</p>
+        <p class="acct-card-sub">Write your own review request. Use <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{name}</code>, <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{service}</code>, <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{business}</code>, and <code style="background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:12px">{reviewLink}</code> as placeholders. Once saved, a "Custom ✏️" option appears in the dashboard message picker.</p>
 
         <form id="template-form">
           <div class="acct-field">
@@ -352,6 +352,7 @@
       if (!tpl) { prev.textContent = 'Enter your message above to see a preview.'; prev.style.color = '#9ca3af'; return; }
       const preview = tpl.replace(/\{name\}/gi, 'John Smith')
                          .replace(/\{service\}/gi, 'AC Repair')
+                         .replace(/\{business\}/gi, (currentUser?.businessName || 'Your Business'))
                          .replace(/\{reviewLink\}/gi, 'https://g.page/r/your-link')
                          .replace(/\{link\}/gi, 'https://g.page/r/your-link');
       prev.textContent = preview;

@@ -78,6 +78,8 @@ const statReplies = document.getElementById('stat-replies');
     set(val) {
       window.__currentUser = val;
       if (val?.trade) renderPicks(val.trade);
+      // Business name & saved review link arrive with the user — refresh preview
+      try { updateSMSPreview(); } catch {}
       // Inject "Custom" template chip if user has a saved custom template
       const chips = document.getElementById('tpl-chips');
       if (chips) {
@@ -134,17 +136,21 @@ function paintStars(n) {
 }
 
 /* ── SMS Templates ───────────────────────────────────────────────────────── */
+// Mirrors buildSMSFromTemplate in server.js — keep in sync so the preview
+// matches what the customer actually receives.
+function bizName() { return (window._currentUser?.businessName || '').trim(); }
 const SMS_TEMPLATES = {
   standard: (name, service, link) =>
-    `Hi ${name}, thanks for choosing us for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`,
+    `Hi ${name}, thanks for choosing ${bizName() || 'us'} for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`,
   brief: (name, service, link) =>
-    `Hi ${name}! Quick favour — could you leave us a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`,
+    `Hi ${name}! Quick favour — could you leave ${bizName() || 'us'} a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`,
   personal: (name, service, link) =>
-    `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help us out enormously: ${link} — thanks so much!`,
+    `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help ${bizName() ? `us at ${bizName()}` : 'us'} enormously: ${link} — thanks so much!`,
   custom: (name, service, link) => {
     const tpl = window._currentUser?.smsTemplate;
     if (!tpl) return SMS_TEMPLATES.standard(name, service, link);
     return tpl.replace(/\{name\}/gi, name).replace(/\{service\}/gi, service)
+              .replace(/\{business\}/gi, bizName() || 'our team')
               .replace(/\{reviewLink\}/gi, link).replace(/\{link\}/gi, link);
   },
 };
@@ -815,4 +821,34 @@ function toast(type, msg, duration) {
     setTimeout(() => toast('info', '👋 Welcome back! Your dashboard is ready.'), 500);
     window.history.replaceState({}, '', '/dashboard');
   }
+  if (p.get('upgraded') === '1') {
+    setTimeout(() => toast('ok', '🎉 You\'re upgraded! Your plan is active — everything is unlocked. Thanks for going pro!', 6000), 500);
+    window.history.replaceState({}, '', '/dashboard');
+  }
+})();
+
+// ── Phone auto-format ────────────────────────────────────────────────────────
+// Tradespeople type "(555) 123-4567" — show them the normalized number on blur
+// so they know exactly what will be dialed, and catch typos before sending.
+(function initPhoneFormat() {
+  const el = document.getElementById('phone');
+  const warn = document.getElementById('phone-dup-warn');
+  if (!el) return;
+  el.addEventListener('blur', () => {
+    const raw = el.value.trim();
+    if (!raw) return;
+    const digits = raw.replace(/\D/g, '');
+    let norm = null;
+    if (raw.startsWith('+') && digits.length >= 11 && digits.length <= 15) norm = '+' + digits;
+    else if (digits.length === 10) norm = '+1' + digits;
+    else if (digits.length === 11 && digits.startsWith('1')) norm = '+' + digits;
+    if (norm) {
+      el.value = norm;
+      el.style.borderColor = '';
+    } else if (warn && !warn.textContent) {
+      el.style.borderColor = '#f59e0b';
+      el.title = 'Expected a 10-digit US number, e.g. (555) 123-4567';
+    }
+  });
+  el.addEventListener('input', () => { el.style.borderColor = ''; el.title = ''; });
 })();

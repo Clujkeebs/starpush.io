@@ -11,6 +11,10 @@ const mailer       = require('./mailer');
 const app  = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'starpush-dev-secret-change-in-production';
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET must be set in production — anyone could forge login tokens with the default secret.');
+  process.exit(1);
+}
 
 // ── Stripe setup ──────────────────────────────────────────────────────────────
 let stripe = null;
@@ -49,20 +53,45 @@ function getUser(req) {
 }
 function requireAuth(req, res, next) {
   const user = getUser(req);
-  if (!user) return res.redirect('/login?next=' + encodeURIComponent(req.path));
+  if (!user) {
+    // API callers need JSON — a redirect would hand fetch() the login page HTML
+    if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Your session has expired — please log in again.', login: '/login' });
+    return res.redirect('/login?next=' + encodeURIComponent(req.path));
+  }
   req.user = user;
   next();
 }
-function requireSubscription(req, res, next) {
-  const user = req.user;
+function hasActiveAccess(user) {
+  if (!user) return false;
   const trialEnd = new Date(user.trialEndsAt);
-  const isTrialActive = trialEnd > new Date();
-  const isSubscribed = user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing';
-  if (isTrialActive || isSubscribed) return next();
+  if (user.subscriptionStatus === 'active') return true;
+  // 'trialing' status only counts while the trial clock is still running
+  return trialEnd > new Date();
+}
+function requireSubscription(req, res, next) {
+  if (hasActiveAccess(req.user)) return next();
   return res.redirect('/upgrade?expired=1');
+}
+// API variant — returns JSON instead of redirecting, so fetch() callers get a
+// clear error rather than silently following a redirect to an HTML page.
+function requireActiveAPI(req, res, next) {
+  if (hasActiveAccess(req.user)) return next();
+  return res.status(402).json({ error: 'Your free trial has ended. Upgrade to keep sending review requests.', upgrade: '/upgrade' });
 }
 
 // ── Twilio SMS ────────────────────────────────────────────────────────────────
+// Twilio requires E.164 (+15551234567). Tradespeople type local formats like
+// (555) 123-4567 — accept those and normalize. Returns null if unusable.
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  const digits = s.replace(/\D/g, '');
+  if (s.startsWith('+') && digits.length >= 11 && digits.length <= 15) return '+' + digits;
+  if (digits.length === 10) return '+1' + digits;
+  if (digits.length === 11 && digits.startsWith('1')) return '+' + digits;
+  return null;
+}
+
 async function sendTwilioSMS(toNumber, messageBody) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken  = process.env.TWILIO_AUTH_TOKEN;
@@ -339,7 +368,7 @@ app.post('/api/auth/signup', async (req, res) => {
           line_items: [{ price: priceId, quantity: 1 }],
           subscription_data: { trial_period_days: 14 },
           success_url: `${getAppUrl(req)}/dashboard?welcome=1`,
-          cancel_url:  `${getAppUrl(req)}/pricing`,
+          cancel_url:  `${getAppUrl(req)}/dashboard?welcome=1`,
           metadata: { userId: user.id, plan: req.body.plan },
         });
         return res.json({ success: true, stripeUrl: session.url });
@@ -477,7 +506,7 @@ app.post('/api/stripe/create-checkout', requireAuth, async (req, res) => {
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: { trial_period_days: 14 },
       success_url: `${getAppUrl(req)}/dashboard?upgraded=1`,
-      cancel_url:  `${getAppUrl(req)}/pricing`,
+      cancel_url:  `${getAppUrl(req)}/upgrade`,
       metadata: { userId: req.user.id, plan },
     });
     res.json({ url: session.url });
@@ -521,7 +550,7 @@ app.post('/api/stripe/webhook', (req, res) => {
 
 // GET /api/stripe/portal
 app.get('/api/stripe/portal', requireAuth, async (req, res) => {
-  if (!stripe || !req.user.stripeCustomerId) return res.redirect('/pricing');
+  if (!stripe || !req.user.stripeCustomerId) return res.redirect('/upgrade');
   try {
     const session = await stripe.billingPortal.sessions.create({
       customer: req.user.stripeCustomerId,
@@ -539,34 +568,41 @@ app.get('/api/stripe/portal', requireAuth, async (req, res) => {
 
 // POST /api/send-request
 // ── Template builder (shared by send-request and send-bulk) ───────────────
-function buildSMSFromTemplate(tpl, name, service, link, customTemplate) {
+// Texts arrive from an unrecognized number — leading with the business name is
+// the difference between "oh, my plumber" and "spam, delete".
+function buildSMSFromTemplate(tpl, name, service, link, customTemplate, businessName) {
+  const biz = (businessName || '').trim();
   if (tpl === 'custom' && customTemplate) {
     return customTemplate
       .replace(/\{name\}/gi, name)
       .replace(/\{service\}/gi, service)
+      .replace(/\{business\}/gi, biz || 'our team')
       .replace(/\{reviewLink\}/gi, link)
       .replace(/\{link\}/gi, link);
   }
   if (tpl === 'brief')
-    return `Hi ${name}! Quick favour — could you leave us a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`;
+    return `Hi ${name}! Quick favour — could you leave ${biz || 'us'} a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`;
   if (tpl === 'personal')
-    return `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help us out enormously: ${link} — thanks so much!`;
-  return `Hi ${name}, thanks for choosing us for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`;
+    return `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help ${biz ? `us at ${biz}` : 'us'} enormously: ${link} — thanks so much!`;
+  return `Hi ${name}, thanks for choosing ${biz || 'us'} for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`;
 }
 
-app.post('/api/send-request', requireAuth, async (req, res) => {
+app.post('/api/send-request', requireAuth, requireActiveAPI, async (req, res) => {
   const { customerName, phone, service, city, reviewLink, template } = req.body;
   if (!customerName || !phone || !service) return res.status(400).json({ error: 'customerName, phone, and service are required.' });
 
+  const normPhone = normalizePhone(phone);
+  if (!normPhone) return res.status(400).json({ error: 'That phone number doesn\'t look right — please enter a 10-digit US number, e.g. (555) 123-4567.' });
+
   const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const smsBody = buildSMSFromTemplate(template, customerName.trim(), service.trim(), link, req.user.smsTemplate);
+  const smsBody = buildSMSFromTemplate(template, customerName.trim(), service.trim(), link, req.user.smsTemplate, req.user.businessName);
 
   const custId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
-  const entry = { type: 'sms_sent', customerName: customerName.trim(), phone: phone.trim(), service: service.trim(), city: (city || '').trim(), message: smsBody, status: 'pending', twilioSid: null, error: null, customerId: custId };
+  const entry = { type: 'sms_sent', customerName: customerName.trim(), phone: normPhone, service: service.trim(), city: (city || '').trim(), message: smsBody, status: 'pending', twilioSid: null, error: null, customerId: custId };
 
   let twilioOk = false;
   try {
-    const result    = await sendTwilioSMS(phone.trim(), smsBody);
+    const result    = await sendTwilioSMS(normPhone, smsBody);
     entry.status    = 'delivered';
     entry.twilioSid = result.sid;
     twilioOk = true;
@@ -584,7 +620,7 @@ app.post('/api/send-request', requireAuth, async (req, res) => {
       id: custId,
       userId: req.user.id,
       name: customerName.trim(),
-      phone: phone.trim(),
+      phone: normPhone,
       service: service.trim(),
       city: (city || '').trim(),
       status: twilioOk ? 'sent' : 'pending',
@@ -603,7 +639,7 @@ app.post('/api/send-request', requireAuth, async (req, res) => {
 // BULK SEND API  — send review requests to multiple customers at once
 // ════════════════════════════════════════════════════════════════════════════
 
-app.post('/api/send-bulk', requireAuth, async (req, res) => {
+app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
   const { customers, service, city, reviewLink, template } = req.body;
   if (!Array.isArray(customers) || customers.length === 0)
     return res.status(400).json({ error: 'customers array is required.' });
@@ -615,10 +651,11 @@ app.post('/api/send-bulk', requireAuth, async (req, res) => {
 
   for (const c of customers) {
     const name  = (c.name  || '').trim();
-    const phone = (c.phone || '').trim();
-    if (!name || !phone) { results.push({ name, phone, status: 'skipped', error: 'missing name or phone' }); continue; }
+    const phone = normalizePhone(c.phone);
+    if (!name || !c.phone) { results.push({ name, phone: c.phone, status: 'skipped', error: 'missing name or phone' }); continue; }
+    if (!phone) { results.push({ name, phone: c.phone, status: 'skipped', error: 'invalid phone number' }); continue; }
 
-    const smsBody = buildSMSFromTemplate(template, name, service.trim(), link, req.user.smsTemplate);
+    const smsBody = buildSMSFromTemplate(template, name, service.trim(), link, req.user.smsTemplate, req.user.businessName);
     const bulkCustId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
     let twilioOk = false, twilioSid = null, errorMsg = null;
 
@@ -647,15 +684,17 @@ app.post('/api/send-bulk', requireAuth, async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 
 // POST /api/customers — add a new customer (auto-sends initial SMS)
-app.post('/api/customers', requireAuth, async (req, res) => {
+app.post('/api/customers', requireAuth, requireActiveAPI, async (req, res) => {
   const { name, phone, service, city } = req.body;
   if (!name || !phone || !service) return res.status(400).json({ error: 'name, phone, and service are required.' });
+  const normPhone = normalizePhone(phone);
+  if (!normPhone) return res.status(400).json({ error: 'That phone number doesn\'t look right — please enter a 10-digit US number, e.g. (555) 123-4567.' });
 
   const custData = {
     id: 'c_' + Date.now(),
     userId: req.user.id,
     name: name.trim(),
-    phone: phone.trim(),
+    phone: normPhone,
     service: service.trim(),
     city: (city || '').trim(),
     status: 'pending',
@@ -663,8 +702,8 @@ app.post('/api/customers', requireAuth, async (req, res) => {
   };
 
   // Attempt initial SMS — gracefully no-op if Twilio isn't configured
-  const link    = process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const smsBody = `Hi ${custData.name}, thanks for choosing us for your ${custData.service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`;
+  const link    = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const smsBody = buildSMSFromTemplate('standard', custData.name, custData.service, link, null, req.user.businessName);
   try {
     await sendTwilioSMS(custData.phone, smsBody);
     custData.status    = 'sent';
@@ -707,13 +746,16 @@ app.get('/api/customers/export', requireAuth, (req, res) => {
 });
 
 // POST /api/customers/:id/send-followup
-app.post('/api/customers/:id/send-followup', requireAuth, async (req, res) => {
+app.post('/api/customers/:id/send-followup', requireAuth, requireActiveAPI, async (req, res) => {
   let customer = db.getCustomer(req.params.id);
   if (!customer || customer.userId !== req.user.id) return res.status(404).json({ error: 'Customer not found.' });
-  const link    = process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const body    = `Hi ${customer.name}, just a friendly reminder — we'd love a quick Google review for the ${customer.service} we did. Takes 30 seconds: ${link}. Thanks!`;
+  const normPhone = normalizePhone(customer.phone);
+  if (!normPhone) return res.status(400).json({ error: 'This customer\'s phone number is invalid — edit it and try again.' });
+  const link = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const biz  = (req.user.businessName || '').trim();
+  const body = `Hi ${customer.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${customer.service} we did. Takes 30 seconds: ${link}. Thanks!`;
   try {
-    await sendTwilioSMS(customer.phone, body);
+    await sendTwilioSMS(normPhone, body);
     customer = db.updateCustomer(customer.id, {
       lastSmsAt: new Date().toISOString(),
       smsCount: (customer.smsCount || 0) + 1,
@@ -804,7 +846,7 @@ app.get('/api/stats', requireAuth, (req, res) => {
 });
 
 // POST /api/webhook/review
-app.post('/api/webhook/review', requireAuth, async (req, res) => {
+app.post('/api/webhook/review', requireAuth, requireActiveAPI, async (req, res) => {
   const { reviewText, reviewerName, service, city, rating } = req.body;
   if (!reviewText || !reviewText.trim()) return res.status(400).json({ error: 'reviewText is required.' });
   const numericRating = Math.min(5, Math.max(1, Number(rating) || 5));
@@ -831,7 +873,7 @@ app.post('/api/webhook/review', requireAuth, async (req, res) => {
 app.get('/api/feed', requireAuth, (req, res) => { res.json(db.getFeed(req.user.id)); });
 
 // POST /api/insights — AI Growth Coach
-app.post('/api/insights', requireAuth, async (req, res) => {
+app.post('/api/insights', requireAuth, requireActiveAPI, async (req, res) => {
   try {
     const feedData      = db.getFeed(req.user.id);
     const customers     = db.getCustomers(req.user.id);
@@ -871,7 +913,7 @@ app.post('/api/insights', requireAuth, async (req, res) => {
 });
 
 // POST /api/recovery-script — Review Shield recovery plan
-app.post('/api/recovery-script', requireAuth, async (req, res) => {
+app.post('/api/recovery-script', requireAuth, requireActiveAPI, async (req, res) => {
   const { reviewText, reviewerName, service, city, rating } = req.body;
   if (!reviewText) return res.status(400).json({ error: 'reviewText is required.' });
   try {
@@ -885,7 +927,7 @@ app.post('/api/recovery-script', requireAuth, async (req, res) => {
 });
 
 // POST /api/generate-posts — AI Google Business Profile post generator
-app.post('/api/generate-posts', requireAuth, async (req, res) => {
+app.post('/api/generate-posts', requireAuth, requireActiveAPI, async (req, res) => {
   const { trade, city } = req.body;
   if (!trade || !city) return res.status(400).json({ error: 'trade and city are required.' });
 
@@ -997,7 +1039,7 @@ app.post('/api/optimize', async (req, res) => {
 });
 
 // POST /api/gbp-starter — guided launch plan for new/unfinished profiles
-app.post('/api/gbp-starter', requireAuth, async (req, res) => {
+app.post('/api/gbp-starter', requireAuth, requireActiveAPI, async (req, res) => {
   const { businessName, category, city, services, hasProfile } = req.body;
   if (!businessName || !category || !city) {
     return res.status(400).json({ error: 'businessName, category, and city are required.' });
@@ -1058,14 +1100,17 @@ setInterval(async () => {
       try {
         const user = db.getUser(c.userId);
         if (!user) continue;
+        const normPhone = normalizePhone(c.phone);
+        if (!normPhone) { console.warn(`[Auto-Followup] skipping ${c.name}: invalid phone`); continue; }
         const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';
-        const body = `Hi ${c.name}, just a friendly reminder — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${reviewLink}. Thanks!`;
+        const biz = (user.businessName || '').trim();
+        const body = `Hi ${c.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${reviewLink}. Thanks!`;
         db.updateCustomer(c.id, {
           lastSmsAt: new Date().toISOString(),
           smsCount: (c.smsCount || 1) + 1,
           status: 'followup_sent',
         });
-        await sendTwilioSMS(c.phone, body);
+        await sendTwilioSMS(normPhone, body);
         console.log(`[Auto-Followup] sent to ${c.name} (${c.phone})`);
       } catch (err) { console.error('[Auto-Followup] customer error:', err.message); }
     }
