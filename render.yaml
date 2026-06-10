@@ -63,14 +63,16 @@ services:
       - key: STRIPE_PRO_PRICE_ID
         sync: false
 
-      # Email (optional — welcome emails & password resets)
+      # Email — AOL SMTP for welcome emails, password resets, trial reminders
       - key: SMTP_HOST
-        sync: false
+        value: smtp.aol.com
       - key: SMTP_PORT
-        sync: false
+        value: "587"
       - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
-        sync: false
+        value: clujkeebs@aol.com
       - key: SMTP_FROM
+        value: "Starpush <clujkeebs@aol.com>"
+      # SMTP_PASS must be an AOL App Password (not your AOL login password)
+      # Generate one at: myaccount.aol.com → Security → App passwords
+      - key: SMTP_PASS
         sync: false
