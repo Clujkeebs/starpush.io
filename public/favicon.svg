@@ -1,4 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="8" fill="#0d2137"/>
-  <text x="16" y="23" font-size="20" text-anchor="middle" font-family="Arial">🚀</text>
+  <!-- Gold star -->
+  <polygon points="16,2 19.8,11.8 30,12.4 22.5,19.2 24.9,29.2 16,24 7.1,29.2 9.5,19.2 2,12.4 12.2,11.8" fill="#F5A623"/>
+  <!-- Arrow cutout (white negative space) -->
+  <polygon points="16,8 18.5,20 16,17.5 13.5,20" fill="white"/>
+  <rect x="14.5" y="17" width="3" height="8" rx="0.5" fill="white"/>
 </svg>
