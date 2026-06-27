@@ -139,6 +139,30 @@
     </div>
   </section>
 
+  <!-- ─────────────────────────────── FEATURE STRIP ── -->
+  <div class="stats-bar">
+    <div class="stats-bar-inner">
+      <div class="stats-bar-item">
+        <span>⚡</span>
+        <span class="stats-bar-lbl">Live in under 10 minutes</span>
+      </div>
+      <div class="stats-bar-divider"></div>
+      <div class="stats-bar-item">
+        <span>📱</span>
+        <span class="stats-bar-lbl">SMS review requests included</span>
+      </div>
+      <div class="stats-bar-divider"></div>
+      <div class="stats-bar-item">
+        <span>🤖</span>
+        <span class="stats-bar-lbl">AI reply for every review</span>
+      </div>
+      <div class="stats-bar-divider"></div>
+      <div class="stats-bar-item">
+        <span>🛡️</span>
+        <span class="stats-bar-lbl">30-day money-back guarantee</span>
+      </div>
+    </div>
+  </div>
 
   <!-- ───────────────────────────────── ROI ESTIMATOR ── -->
   <section class="section roi-section" id="roi-estimator">
@@ -576,6 +600,21 @@
     </div>
   </section>
 
+  <!-- ─────────────────────────────── EARLY ADOPTER ── -->
+  <section class="section section-light">
+    <div class="section-inner" style="text-align:center;max-width:720px;margin-left:auto;margin-right:auto">
+      <div class="section-label">GET IN EARLY</div>
+      <h2 class="section-h2">Be the first in your city<br/>to dominate Google Maps.</h2>
+      <p class="section-sub" style="margin-bottom:32px">Starpush is new — which means your competitors haven't found it yet. There's a short window to build a review lead they can't recover from. Start your free trial and use it.</p>
+      <a href="/signup" class="btn-primary-lg">Claim My Free 14-Day Trial →</a>
+      <div class="hero-trust-row" style="justify-content:center;margin-top:20px">
+        <span>✓ No credit card</span>
+        <span>✓ 30-day money-back</span>
+        <span>✓ Cancel anytime</span>
+        <span>✓ Live in 10 minutes</span>
+      </div>
+    </div>
+  </section>
 
   <!-- ───────────────────────────────────────── FAQ ── -->
   <section class="section" id="faq">
@@ -851,7 +890,7 @@
   <div class="sticky-cta" id="sticky-cta">
     <div class="sticky-cta-inner">
       <div class="sticky-cta-copy">
-        <strong>🔥 47 businesses signed up for Starpush this week</strong>
+        <strong>🚀 Turn every job into a 5-star Google review — automatically</strong>
         <span>14-day free trial · No credit card · Cancel anytime</span>
       </div>
       <div class="sticky-cta-actions">
@@ -894,34 +933,11 @@
       entries => entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }),
       { threshold: 0.1 }
     );
-    document.querySelectorAll('.pain-card, .step, .testi-card, .feature-card, .pricing-card, .faq-item, .compare-table-wrap, .stats-bar-item, .section-h2, .section-label').forEach(el => {
+    document.querySelectorAll('.pain-card, .step, .feature-card, .pricing-card, .faq-item, .compare-table-wrap, .section-h2, .section-label').forEach(el => {
       el.classList.add('fade-target');
       observer.observe(el);
     });
 
-    // ── Animated stat counters ──────────────────────────────────────────────
-    function animateCount(el, target, suffix, duration) {
-      const start = performance.now();
-      (function tick(now) {
-        const p = Math.min((now - start) / duration, 1);
-        const e = 1 - Math.pow(1 - p, 3);
-        el.textContent = Math.round(e * target).toLocaleString() + suffix;
-        if (p < 1) requestAnimationFrame(tick);
-      })(performance.now());
-    }
-    const statsObserver = new IntersectionObserver(entries => {
-      entries.forEach(e => {
-        if (!e.isIntersecting) return;
-        statsObserver.unobserve(e.target);
-        const nums = e.target.querySelectorAll('.stats-bar-num');
-        if (nums[0]) animateCount(nums[0], 1200, '+', 1600);
-        if (nums[1]) animateCount(nums[1], 48000, '+', 2000);
-        if (nums[2]) { setTimeout(() => { nums[2].textContent = '4.8★'; }, 800); }
-        if (nums[3]) { setTimeout(() => { nums[3].textContent = '<10 min'; }, 1000); }
-      });
-    }, { threshold: 0.5 });
-    const statsBar = document.querySelector('.stats-bar');
-    if (statsBar) statsObserver.observe(statsBar);
 
     // ── Sticky CTA bar ──────────────────────────────────────────────────────
     const stickyCta   = document.getElementById('sticky-cta');
