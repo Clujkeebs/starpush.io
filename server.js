@@ -322,7 +322,7 @@ Generate 6-8 steps covering at minimum: create the profile, verify it, set the p
 
 // POST /api/auth/signup
 app.post('/api/auth/signup', async (req, res) => {
-  const { name, email, password, businessName, trade, phone } = req.body;
+  const { name, email, password, businessName, trade, phone, promoCode } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required.' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
@@ -330,6 +330,7 @@ app.post('/api/auth/signup', async (req, res) => {
     return res.status(409).json({ error: 'An account with that email already exists. Please log in.' });
   }
 
+  const isFreeForever = (promoCode || '').trim().toLowerCase() === 'dro';
   const hash = await bcrypt.hash(password, 10);
   const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
   const user = db.createUser({
@@ -340,19 +341,19 @@ app.post('/api/auth/signup', async (req, res) => {
     businessName: (businessName || '').trim(),
     trade: (trade || '').trim(),
     phone: (phone || '').trim(),
-    plan: 'trial',
+    plan: isFreeForever ? 'pro' : 'trial',
     trialEndsAt,
-    subscriptionStatus: 'trialing',
+    subscriptionStatus: isFreeForever ? 'active' : 'trialing',
   });
 
-  console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}`);
+  console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}${isFreeForever ? ' | promo:dro (free forever)' : ''}`);
   mailer.sendWelcome(user.email, user.name).catch(() => {});
 
   const token = signToken(user);
   res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
 
-  // If Stripe configured, create checkout session
-  if (stripe && req.body.plan && req.body.plan !== 'trial') {
+  // If Stripe configured, create checkout session (skip for promo-code free-forever users)
+  if (!isFreeForever && stripe && req.body.plan && req.body.plan !== 'trial') {
     const priceIds = {
       starter: process.env.STRIPE_STARTER_PRICE_ID,
       growth:  process.env.STRIPE_GROWTH_PRICE_ID,
