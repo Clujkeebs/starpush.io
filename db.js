@@ -76,6 +76,7 @@ try { sqlite.exec('ALTER TABLE users ADD COLUMN reset_token TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN reset_expires TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN google_review_link TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_template TEXT'); } catch {}
+try { sqlite.exec('ALTER TABLE users ADD COLUMN promo_code TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
 
 // ── Indexes ──────────────────────────────────────────────────────────────────
@@ -102,6 +103,7 @@ const SNAKE_TO_CAMEL = {
   reset_expires:          'resetExpires',
   google_review_link:     'googleReviewLink',
   sms_template:           'smsTemplate',
+  promo_code:             'promoCode',
   created_at:             'createdAt',
   user_id:                'userId',
   added_at:               'addedAt',
@@ -143,11 +145,11 @@ const stmts = {
     INSERT INTO users (id, name, email, password_hash, business_name, trade, phone,
                        plan, trial_ends_at, subscription_status,
                        stripe_customer_id, stripe_subscription_id,
-                       reset_token, reset_expires, created_at)
+                       reset_token, reset_expires, promo_code, created_at)
     VALUES (@id, @name, @email, @password_hash, @business_name, @trade, @phone,
             @plan, @trial_ends_at, @subscription_status,
             @stripe_customer_id, @stripe_subscription_id,
-            @reset_token, @reset_expires, @created_at)
+            @reset_token, @reset_expires, @promo_code, @created_at)
   `),
   deleteUser: sqlite.prepare('DELETE FROM users WHERE id = ?'),
 
@@ -227,6 +229,7 @@ db.createUser = function createUser(data) {
     stripe_subscription_id:  data.stripeSubscriptionId || null,
     reset_token:             data.resetToken    || null,
     reset_expires:           data.resetExpires  || null,
+    promo_code:              data.promoCode     || null,
     created_at:              data.createdAt     || new Date().toISOString(),
   };
   stmts.insertUser.run(params);
