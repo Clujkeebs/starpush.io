@@ -12,17 +12,28 @@ const oResults      = document.getElementById('o-results');
 const loadingBiz    = document.getElementById('loading-biz');
 const reanalyzeBtn  = document.getElementById('reanalyze-btn');
 
+/* ── Custom "Other" category ─────────────────────────────────────────────── */
+const categorySelect = document.getElementById('f-category');
+const categoryCustom  = document.getElementById('f-category-custom');
+categorySelect.addEventListener('change', () => {
+  const isOther = categorySelect.value === '__other__';
+  categoryCustom.classList.toggle('hidden', !isOther);
+  if (isOther) categoryCustom.focus();
+});
+
 /* ── Form submit ─────────────────────────────────────────────────────────── */
 analyzeBtn.addEventListener('click', async () => {
   errorBox.classList.add('hidden');
 
   const name     = document.getElementById('f-name').value.trim();
-  const category = document.getElementById('f-category').value;
+  const category = categorySelect.value === '__other__'
+    ? categoryCustom.value.trim()
+    : categorySelect.value;
   const city     = document.getElementById('f-city').value.trim();
   const services = document.getElementById('f-services').value.trim();
 
   if (!name)     { showError('Business name is required.'); return shake(document.getElementById('f-name')); }
-  if (!category) { showError('Please select your trade / category.'); return shake(document.getElementById('f-category')); }
+  if (!category) { showError('Please select your trade / category.'); return shake(categorySelect.value === '__other__' ? categoryCustom : categorySelect); }
   if (!city)     { showError('City is required.'); return shake(document.getElementById('f-city')); }
   if (!services) { showError('Please list the services you offer.'); return shake(document.getElementById('f-services')); }
 
