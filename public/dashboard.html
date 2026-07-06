@@ -888,7 +888,7 @@
               ${!isDeclined && !isScheduled ? `<button data-act="followup" data-id="${safe(c.id)}" class="cust-btn${dueFollowup ? ' cust-btn-urgent' : ''}">Send Follow-up</button>` : ''}
               ${!isDeclined && !isScheduled && status !== 'reviewed' && status !== 'completed' ? `<button data-act="reviewed" data-id="${safe(c.id)}" class="cust-btn cust-btn-ok">✓ Reviewed</button>` : ''}
               ${status === 'reviewed' || status === 'completed' ? `<span class="cust-reviewed-note">⭐ Review received</span>` : ''}
-              ${!isDeclined ? `<button data-act="declined" data-id="${safe(c.id)}" class="cust-btn cust-btn-declined">✕ Declined</button>` : ''}
+              ${!isDeclined && !isScheduled ? `<button data-act="declined" data-id="${safe(c.id)}" class="cust-btn cust-btn-declined">✕ Declined</button>` : ''}
               <button data-act="remove" data-id="${safe(c.id)}" class="cust-btn cust-btn-x" title="Remove">🗑</button>
             </div>
             <textarea class="cust-notes-input" data-notes-id="${safe(c.id)}" placeholder="Job notes… (e.g. 'fence + gate, paid cash')" rows="1">${safe(c.notes || '')}</textarea>
