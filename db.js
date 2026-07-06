@@ -79,6 +79,18 @@ try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_template TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN promo_code TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
 
+// One-time cleanup: lowercase + trim stored emails so lookups always match.
+// Row-by-row so a rare case-only duplicate (unique constraint) skips instead
+// of aborting the whole cleanup.
+try {
+  const dirty = sqlite.prepare("SELECT id, email FROM users WHERE email != lower(trim(email))").all();
+  const fix   = sqlite.prepare('UPDATE users SET email = ? WHERE id = ?');
+  for (const row of dirty) {
+    try { fix.run(row.email.trim().toLowerCase(), row.id); } catch {}
+  }
+  if (dirty.length) console.log(`[db] Normalized ${dirty.length} user email(s) to lowercase.`);
+} catch {}
+
 // ── Indexes ──────────────────────────────────────────────────────────────────
 
 sqlite.exec(`
@@ -137,7 +149,10 @@ function camelToSnake(key) {
 const stmts = {
   // Users
   getUserById:         sqlite.prepare('SELECT * FROM users WHERE id = ?'),
-  getUserByEmail:      sqlite.prepare('SELECT * FROM users WHERE email = ?'),
+  // COLLATE NOCASE: accounts migrated from users.json kept their original
+  // casing (e.g. "Bob@Example.com"), but login lowercases input — a binary
+  // match would say "No account found" for a real account.
+  getUserByEmail:      sqlite.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE'),
   getUserByResetToken:       sqlite.prepare('SELECT * FROM users WHERE reset_token = ?'),
   getUserByStripeCustomerId: sqlite.prepare('SELECT * FROM users WHERE stripe_customer_id = ?'),
   getAllUsers:     sqlite.prepare('SELECT * FROM users ORDER BY created_at DESC'),

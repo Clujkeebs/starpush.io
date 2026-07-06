@@ -603,8 +603,12 @@
         const isActive = user.subscriptionStatus === 'active';
         if (planEl) {
           if (isTrial && !isActive) {
-            planEl.textContent = daysLeft > 0 ? `Free Trial — ${daysLeft} days left` : 'Trial Ended';
-            planEl.style.color = daysLeft <= 3 ? '#dc2626' : '#059669';
+            // Complimentary (promo) trials have a far-future end date — show a
+            // clean "Active" rather than a silly five-digit day count.
+            planEl.textContent = daysLeft > 365 ? 'Free Trial — Active'
+                               : daysLeft > 0   ? `Free Trial — ${daysLeft} days left`
+                               : 'Trial Ended';
+            planEl.style.color = (daysLeft > 0 && daysLeft <= 3) ? '#dc2626' : '#059669';
           } else {
             planEl.textContent = `${user.plan} Plan — Active`;
             planEl.style.color = '#059669';
@@ -624,6 +628,8 @@
           if (daysLeft <= 0) {
             // Trial expired — block dashboard
             expired.classList.remove('hidden');
+          } else if (daysLeft > 365) {
+            // Complimentary trial — no countdown nag
           } else if (!dismissed) {
             banner.classList.remove('hidden');
             if (daysLeft <= 3) {

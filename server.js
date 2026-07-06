@@ -105,8 +105,22 @@ async function sendTwilioSMS(toNumber, messageBody) {
     body: new URLSearchParams({ To: toNumber, From: fromNumber, Body: messageBody }).toString(),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.message || `Twilio error HTTP ${response.status}`);
+  if (!response.ok) throw new Error(friendlyTwilioError(data, response.status));
   return data;
+}
+
+// Twilio's raw errors are written for developers ("The number +1XXX is
+// unverified. Trial accounts cannot..."). Translate the common ones into
+// plain-English guidance a business owner can act on.
+function friendlyTwilioError(data, httpStatus) {
+  const code = data && data.code;
+  if (code === 21608) return 'Texting is in test mode: the SMS account (Twilio) is still a free trial, which can only text pre-verified numbers. Fix: upgrade the Twilio account at twilio.com (add billing) — then texts will send to any number.';
+  if (code === 21211) return 'That phone number isn\'t a valid mobile number. Double-check the digits and try again.';
+  if (code === 21610) return 'This customer previously replied STOP and unsubscribed — Twilio blocks further texts to them.';
+  if (code === 21614) return 'That number can\'t receive SMS (it may be a landline). Try a mobile number.';
+  if (code === 20003) return 'SMS service authentication failed — the Twilio credentials on the server are wrong or expired.';
+  if (code === 21606 || code === 21659) return 'The sending phone number isn\'t valid for this Twilio account — check TWILIO_PHONE_NUMBER on the server.';
+  return (data && data.message) || `Twilio error HTTP ${httpStatus}`;
 }
 
 // ── Anthropic AI reply (SEO-Turbo) ───────────────────────────────────────────
@@ -581,12 +595,15 @@ app.get('/api/stripe/portal', requireAuth, async (req, res) => {
 function buildSMSFromTemplate(tpl, name, service, link, customTemplate, businessName) {
   const biz = (businessName || '').trim();
   if (tpl === 'custom' && customTemplate) {
-    return customTemplate
+    const msg = customTemplate
       .replace(/\{name\}/gi, name)
       .replace(/\{service\}/gi, service)
       .replace(/\{business\}/gi, biz || 'our team')
       .replace(/\{reviewLink\}/gi, link)
       .replace(/\{link\}/gi, link);
+    // A review request without the review link is a wasted text — if the
+    // custom template forgot the {link} placeholder, tack the link on.
+    return msg.includes(link) ? msg : `${msg} ${link}`;
   }
   if (tpl === 'brief')
     return `Hi ${name}! Quick favour — could you leave ${biz || 'us'} a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`;
@@ -1108,6 +1125,9 @@ setInterval(async () => {
       try {
         const user = db.getUser(c.userId);
         if (!user) continue;
+        // Don't keep texting on behalf of accounts whose trial/subscription
+        // has ended — access gating applies to automation too.
+        if (!hasActiveAccess(user)) continue;
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) { console.warn(`[Auto-Followup] skipping ${c.name}: invalid phone`); continue; }
         const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';

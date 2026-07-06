@@ -103,6 +103,9 @@ const statReplies = document.getElementById('stat-replies');
     get() { return window.__currentUser; },
     configurable: true,
   });
+  // If the user object arrived before this setter existed, replay it so the
+  // trade picks / custom-template chip still initialize.
+  if (origMe) window._currentUser = origMe;
 })();
 
 /* ── Review link test button ─────────────────────────────────────────────── */
