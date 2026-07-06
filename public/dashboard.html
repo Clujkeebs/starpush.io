@@ -256,6 +256,33 @@
         </div>
       </div>
 
+      <!-- Upload Today's Clients card -->
+      <div class="card">
+        <div class="card-hd">
+          <h2 class="card-title">📥 Upload Today's Clients</h2>
+          <p class="card-sub">Paste the day's jobs once — review requests text out automatically tomorrow at noon. No more typing them in one by one.</p>
+        </div>
+        <textarea id="upload-text" class="inp" rows="5" style="width:100%;resize:vertical;font-family:inherit;font-size:13px;line-height:1.6"
+          placeholder="One customer per line — Name, Phone, Service (optional), City (optional)&#10;&#10;Sarah Thompson, (512) 555-0134, AC repair&#10;Mike Rodriguez, 512-555-0188, Duct cleaning, Austin"></textarea>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap">
+          <input type="file" id="upload-csv" accept=".csv,.txt" style="display:none" />
+          <button type="button" id="upload-csv-btn" class="cust-btn" style="cursor:pointer">📄 …or choose a CSV file</button>
+          <span id="upload-count" style="font-size:12px;color:#6b7280"></span>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:13px;color:#374151">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="radio" name="upload-when" value="noon" checked /> 🕛 Send tomorrow at 12:00 PM
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="radio" name="upload-when" value="now" /> ⚡ Send ASAP (within 2 min)
+          </label>
+        </div>
+        <button type="button" id="upload-btn" class="btn btn-primary" style="margin-top:12px;width:100%" disabled>
+          📅 Schedule texts
+        </button>
+        <div id="upload-result" style="margin-top:10px;font-size:13px;display:none"></div>
+      </div>
+
       <!-- Customers card -->
       <div class="card">
         <div class="card-hd" style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
@@ -820,14 +847,19 @@
         const status = c.status || 'pending';
         const cls    = {
           'pending':       'badge-pending',
+          'scheduled':     'badge-sent',
           'sent':          'badge-sent',
           'followup_sent': 'badge-followup',
           'reviewed':      'badge-reviewed',
           'completed':     'badge-reviewed',
           'declined':      'badge-declined',
         }[status] || 'badge-pending';
+        const schedTime = status === 'scheduled' && c.sendAt
+          ? new Date(c.sendAt).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+          : null;
         const label = {
           'pending':       'Not sent',
+          'scheduled':     schedTime ? `🕛 Sending ${schedTime}` : '🕛 Scheduled',
           'sent':          'SMS sent',
           'followup_sent': 'Follow-up sent',
           'reviewed':      'Reviewed ⭐',
@@ -835,7 +867,8 @@
           'declined':      'Declined 🚫',
         }[status] || status;
         const isDeclined  = status === 'declined';
-        const dueFollowup = !isDeclined && needsFollowup(c);
+        const isScheduled = status === 'scheduled';
+        const dueFollowup = !isDeclined && !isScheduled && needsFollowup(c);
         const itemClass = dueFollowup ? 'customer-item cust-needs-followup' : 'customer-item';
         const followupBadge = dueFollowup
           ? `<span class="cust-followup-badge">⏰ Follow-up due</span>`
@@ -852,8 +885,8 @@
             </div>
             <div class="customer-sub">···${safe(last4)} · ${safe(c.service || '')}${c.city ? ' · ' + safe(c.city) : ''}${subExtra}</div>
             <div class="customer-actions">
-              ${!isDeclined ? `<button data-act="followup" data-id="${safe(c.id)}" class="cust-btn${dueFollowup ? ' cust-btn-urgent' : ''}">Send Follow-up</button>` : ''}
-              ${!isDeclined && status !== 'reviewed' && status !== 'completed' ? `<button data-act="reviewed" data-id="${safe(c.id)}" class="cust-btn cust-btn-ok">✓ Reviewed</button>` : ''}
+              ${!isDeclined && !isScheduled ? `<button data-act="followup" data-id="${safe(c.id)}" class="cust-btn${dueFollowup ? ' cust-btn-urgent' : ''}">Send Follow-up</button>` : ''}
+              ${!isDeclined && !isScheduled && status !== 'reviewed' && status !== 'completed' ? `<button data-act="reviewed" data-id="${safe(c.id)}" class="cust-btn cust-btn-ok">✓ Reviewed</button>` : ''}
               ${status === 'reviewed' || status === 'completed' ? `<span class="cust-reviewed-note">⭐ Review received</span>` : ''}
               ${!isDeclined ? `<button data-act="declined" data-id="${safe(c.id)}" class="cust-btn cust-btn-declined">✕ Declined</button>` : ''}
               <button data-act="remove" data-id="${safe(c.id)}" class="cust-btn cust-btn-x" title="Remove">🗑</button>
@@ -1201,6 +1234,104 @@
       }
       refreshBrief();
       setInterval(refreshBrief, 30000);
+    })();
+
+    // ── Upload Today's Clients ────────────────────────────────────────────
+    (function initClientUpload() {
+      const textEl   = document.getElementById('upload-text');
+      const fileEl   = document.getElementById('upload-csv');
+      const fileBtn  = document.getElementById('upload-csv-btn');
+      const countEl  = document.getElementById('upload-count');
+      const goBtn    = document.getElementById('upload-btn');
+      const resultEl = document.getElementById('upload-result');
+      if (!textEl || !goBtn) return;
+
+      // Parse "Name, Phone, Service?, City?" lines. Also tolerates CSV files
+      // with a header row (skips lines whose phone field has no digits).
+      function parseClients(raw) {
+        return raw.split(/\r?\n/)
+          .map(l => l.trim())
+          .filter(Boolean)
+          .map(line => {
+            const parts = line.split(/[,\t;]/).map(p => p.trim().replace(/^"|"$/g, ''));
+            return { name: parts[0] || '', phone: parts[1] || '', service: parts[2] || '', city: parts[3] || '' };
+          })
+          .filter(c => c.name && /\d{7,}/.test((c.phone || '').replace(/\D/g, '')));
+      }
+
+      function refreshCount() {
+        const n = parseClients(textEl.value).length;
+        goBtn.disabled = n === 0;
+        goBtn.textContent = n === 0 ? '📅 Schedule texts'
+          : `📅 Schedule ${n} text${n === 1 ? '' : 's'}`;
+        countEl.textContent = n ? `${n} customer${n === 1 ? '' : 's'} ready` : '';
+      }
+      textEl.addEventListener('input', refreshCount);
+
+      fileBtn.addEventListener('click', () => fileEl.click());
+      fileEl.addEventListener('change', () => {
+        const f = fileEl.files && fileEl.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          textEl.value = (textEl.value.trim() ? textEl.value.trim() + '\n' : '') + String(reader.result || '').trim();
+          refreshCount();
+        };
+        reader.readAsText(f);
+        fileEl.value = '';
+      });
+
+      // Noon tomorrow in the owner's local time — computed in the browser so
+      // timezones are automatically right.
+      function noonTomorrowISO() {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        d.setHours(12, 0, 0, 0);
+        return d.toISOString();
+      }
+
+      goBtn.addEventListener('click', async () => {
+        const customers = parseClients(textEl.value);
+        if (!customers.length) return;
+        const when   = document.querySelector('input[name="upload-when"]:checked')?.value || 'noon';
+        const sendAt = when === 'now' ? new Date().toISOString() : noonTomorrowISO();
+
+        goBtn.disabled = true;
+        const original = goBtn.textContent;
+        goBtn.textContent = 'Scheduling…';
+        resultEl.style.display = 'none';
+
+        try {
+          const res  = await fetch('/api/customers/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ customers, sendAt }),
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Upload failed.');
+
+          const whenTxt = when === 'now' ? 'within 2 minutes' : 'tomorrow at 12:00 PM';
+          let html = `<div style="color:#059669;font-weight:600">✅ ${data.added} text${data.added === 1 ? '' : 's'} scheduled — sending ${whenTxt}.</div>`;
+          if (data.skipped && data.skipped.length) {
+            html += `<div style="color:#d97706;margin-top:6px">⚠ Skipped ${data.skipped.length}: ${data.skipped.slice(0, 5).map(s => `${escU(s.name)} (${escU(s.reason)})`).join('; ')}${data.skipped.length > 5 ? '…' : ''}</div>`;
+          }
+          resultEl.innerHTML = html;
+          resultEl.style.display = '';
+          textEl.value = '';
+          refreshCount();
+          loadCustomers();
+        } catch (err) {
+          resultEl.innerHTML = `<div style="color:#dc2626;font-weight:600">⚠ ${escU(err.message)}</div>`;
+          resultEl.style.display = '';
+        } finally {
+          goBtn.textContent = original;
+          refreshCount();
+        }
+      });
+
+      function escU(s) {
+        return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      }
     })();
 
     // ── Logout button ────────────────────────────────────────────────────
