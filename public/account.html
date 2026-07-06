@@ -158,9 +158,9 @@
       <section class="acct-card">
         <h2 class="acct-card-title">SMS Service</h2>
         <p class="acct-card-sub">Review request messages are sent on your behalf — no setup required.</p>
-        <div class="acct-twilio">
-          <span class="acct-pill pill-ok">✓ Connected</span>
-          <span class="acct-twilio-note">SMS delivery is fully managed by Starpush. Need to change your sender number? <a href="mailto:clujkeebs@aol.com" style="color:inherit;text-decoration:underline">Contact support</a>.</span>
+        <div class="acct-twilio" id="sms-status-box">
+          <span class="acct-pill pill-ok" id="sms-status-pill">Checking…</span>
+          <span class="acct-twilio-note" id="sms-status-note">SMS delivery is fully managed by Starpush.</span>
         </div>
       </section>
 
@@ -209,6 +209,19 @@
       document.getElementById('p-review-link').value = u.googleReviewLink || '';
       document.getElementById('p-sms-template').value = u.smsTemplate || '';
       updateTemplatePreview();
+
+      // SMS connection status — reflects whether Twilio is actually configured
+      const pill = document.getElementById('sms-status-pill');
+      const note = document.getElementById('sms-status-note');
+      if (u.smsConfigured) {
+        pill.textContent = '✓ Connected';
+        pill.className = 'acct-pill pill-ok';
+        note.innerHTML = 'SMS delivery is fully managed by Starpush. Need to change your sender number? <a href="mailto:clujkeebs@aol.com" style="color:inherit;text-decoration:underline">Contact support</a>.';
+      } else {
+        pill.textContent = '⚠ Not connected';
+        pill.className = 'acct-pill pill-warn';
+        note.innerHTML = 'Texting isn\'t set up yet on this account — review requests won\'t send until it is. <a href="mailto:clujkeebs@aol.com" style="color:inherit;text-decoration:underline">Contact support</a> to finish setup.';
+      }
 
       // Subscription
       const planEl   = document.getElementById('sub-plan');
