@@ -21,6 +21,45 @@ categorySelect.addEventListener('change', () => {
   if (isOther) categoryCustom.focus();
 });
 
+/* ── Auto-fill from the logged-in user's profile ─────────────────────────── */
+// Signed-in users shouldn't have to retype what we already know — pull their
+// business name and trade from the account and map the trade onto the
+// optimizer's GBP category options.
+const TRADE_TO_CATEGORY = {
+  'AC / HVAC':        'HVAC Contractor',
+  'Plumbing':         'Plumber',
+  'Electrical':       'Electrician',
+  'Roofing':          'Roofing Contractor',
+  'Landscaping':      'Landscaper',
+  'Pest Control':     'Pest Control Service',
+  'House Cleaning':   'House Cleaning Service',
+  'Auto Repair':      'Auto Repair Shop',
+  'Appliance Repair': 'Appliance Repair Service',
+  'Painting':         'Painter',
+  'Flooring':         'Flooring Contractor',
+  'Medical':          'Medical Clinic',
+};
+(async function prefillFromProfile() {
+  try {
+    const r = await fetch('/api/auth/me');
+    if (!r.ok) return; // not logged in — leave the form blank
+    const user = await r.json();
+    const nameEl = document.getElementById('f-name');
+    if (user.businessName && nameEl && !nameEl.value) nameEl.value = user.businessName;
+    if (user.trade && !categorySelect.value) {
+      const mapped = TRADE_TO_CATEGORY[user.trade];
+      if (mapped && [...categorySelect.options].some(o => o.value === mapped)) {
+        categorySelect.value = mapped;
+      } else if (user.trade !== 'Other') {
+        // No matching option — carry the trade into the custom field
+        categorySelect.value = '__other__';
+        categoryCustom.classList.remove('hidden');
+        categoryCustom.value = user.trade;
+      }
+    }
+  } catch {}
+})();
+
 /* ── Form submit ─────────────────────────────────────────────────────────── */
 analyzeBtn.addEventListener('click', async () => {
   errorBox.classList.add('hidden');
@@ -35,7 +74,7 @@ analyzeBtn.addEventListener('click', async () => {
   if (!name)     { showError('Business name is required.'); return shake(document.getElementById('f-name')); }
   if (!category) { showError('Please select your trade / category.'); return shake(categorySelect.value === '__other__' ? categoryCustom : categorySelect); }
   if (!city)     { showError('City is required.'); return shake(document.getElementById('f-city')); }
-  if (!services) { showError('Please list the services you offer.'); return shake(document.getElementById('f-services')); }
+  // services are optional — the AI infers them from the trade when blank
 
   setBusy(true);
   loadingBiz.textContent = name;

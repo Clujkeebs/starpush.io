@@ -186,6 +186,7 @@ async function loadInsights() {
 
     if (!res.ok) throw new Error(data.error || 'Failed to load insights.');
 
+    window._coachActionCounts = data.actionCounts || {};
     renderInsights(data.insights, data.weeklyReviews, data.weekSnapshot);
 
     loadingState.classList.add('hidden');
@@ -269,9 +270,17 @@ function renderInsights(data, weeklyReviews, weekSnapshot) {
       ? delta(conv, convLast, '%') : '<span class="ig-delta-neu">—</span>';
   }
 
-  // Insights cards
+  // Insights cards — insights carrying a known executable action get a
+  // real button that makes the coach do the work (server-side allowlist).
+  const ACTION_LABELS = {
+    send_followups:         n => `⚡ Send ${n ? n + ' ' : ''}follow-up${n === 1 ? '' : 's'} now`,
+    text_pending_customers: n => `⚡ Text ${n ? n + ' ' : ''}pending customer${n === 1 ? '' : 's'} now`,
+  };
+  const counts = window._coachActionCounts || {};
   const grid = document.getElementById('insightsGrid');
-  grid.innerHTML = (data.insights || []).map(ins => `
+  grid.innerHTML = (data.insights || []).map(ins => {
+    const runnable = ins.action && ACTION_LABELS[ins.action];
+    return `
     <div class="ig-insight-card ig-type-${ins.type}">
       <div class="ig-insight-header">
         <span class="ig-insight-icon">${esc(ins.icon)}</span>
@@ -280,8 +289,40 @@ function renderInsights(data, weeklyReviews, weekSnapshot) {
       <div class="ig-insight-title">${esc(ins.title)}</div>
       <div class="ig-insight-body">${esc(ins.body)}</div>
       <div class="ig-insight-cta">${esc(ins.cta)}</div>
-    </div>
-  `).join('');
+      ${runnable ? `<button class="ig-do-btn" data-action="${esc(ins.action)}" style="margin-top:10px;width:100%;padding:9px 14px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit">${esc(ACTION_LABELS[ins.action](counts[ins.action]))}</button>` : ''}
+    </div>`;
+  }).join('');
+
+  // Wire the executable action buttons
+  grid.querySelectorAll('.ig-do-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const action = btn.dataset.action;
+      if (!ACTION_LABELS[action]) return;
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Working…';
+      try {
+        const res  = await fetch('/api/coach/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        const out = await res.json();
+        if (res.ok) {
+          btn.textContent = `✓ ${out.message || 'Done'}`;
+          btn.style.background = '#059669';
+        } else {
+          btn.textContent = `⚠ ${out.error || 'Failed'}`;
+          btn.style.background = '#dc2626';
+          setTimeout(() => { btn.textContent = original; btn.style.background = '#4f46e5'; btn.disabled = false; }, 6000);
+        }
+      } catch {
+        btn.textContent = '⚠ Network error — try again';
+        btn.style.background = '#dc2626';
+        setTimeout(() => { btn.textContent = original; btn.style.background = '#4f46e5'; btn.disabled = false; }, 6000);
+      }
+    });
+  });
 
   // Ranking tip
   document.getElementById('rankingTipText').textContent = data.rankingTip || '';

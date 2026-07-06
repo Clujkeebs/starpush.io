@@ -58,6 +58,12 @@ sqlite.exec(`
     data      TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS coach_memory (
+    user_id    TEXT PRIMARY KEY REFERENCES users(id),
+    memory     TEXT,
+    updated_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS audit_leads (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT,
@@ -196,6 +202,13 @@ const stmts = {
   getFeedAll:    sqlite.prepare('SELECT * FROM activity_feed ORDER BY timestamp DESC'),
   clearFeed:     sqlite.prepare('DELETE FROM activity_feed'),
 
+  // Coach memory
+  getCoachMemory: sqlite.prepare('SELECT memory FROM coach_memory WHERE user_id = ?'),
+  setCoachMemory: sqlite.prepare(`
+    INSERT INTO coach_memory (user_id, memory, updated_at) VALUES (@user_id, @memory, @updated_at)
+    ON CONFLICT(user_id) DO UPDATE SET memory = @memory, updated_at = @updated_at
+  `),
+
   // Audit leads
   insertAuditLead: sqlite.prepare(`
     INSERT INTO audit_leads (email, business_name, category, city, services, website, gbp_url, created_at)
@@ -272,6 +285,17 @@ db.deleteUser = function deleteUser(id) {
 
 db.getAllUsers = function getAllUsers() {
   return stmts.getAllUsers.all().map(rowToCamel);
+};
+
+// ── Coach memory (the Growth Coach's evolving notes about a business) ────────
+
+db.getCoachMemory = function getCoachMemory(userId) {
+  const row = stmts.getCoachMemory.get(userId);
+  return row ? row.memory : null;
+};
+
+db.setCoachMemory = function setCoachMemory(userId, memory) {
+  stmts.setCoachMemory.run({ user_id: userId, memory, updated_at: new Date().toISOString() });
 };
 
 // ── Customers ────────────────────────────────────────────────────────────────
