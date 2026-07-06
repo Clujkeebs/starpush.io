@@ -322,7 +322,7 @@ Generate 6-8 steps covering at minimum: create the profile, verify it, set the p
 
 // POST /api/auth/signup
 app.post('/api/auth/signup', async (req, res) => {
-  const { name, email, password, businessName, trade, phone } = req.body;
+  const { name, email, password, businessName, trade, phone, promoCode } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required.' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
 
@@ -330,8 +330,15 @@ app.post('/api/auth/signup', async (req, res) => {
     return res.status(409).json({ error: 'An account with that email already exists. Please log in.' });
   }
 
+  // Promo code 'dro' grants an owner-controlled complimentary free trial:
+  // full access, framed as a normal trial, with the trial clock set far in the
+  // future. The owner can end it at any time (see PROMO.md) by setting the
+  // user's trialEndsAt to the past — that flips them to "free trial expired"
+  // and gates features behind payment WITHOUT deleting any of their data.
+  const hasPromo = (promoCode || '').trim().toLowerCase() === 'dro';
   const hash = await bcrypt.hash(password, 10);
-  const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+  const standardTrialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+  const promoTrialEnd    = new Date('2099-12-31T23:59:59.000Z').toISOString();
   const user = db.createUser({
     id: 'u_' + Date.now(),
     name: name.trim(),
@@ -341,18 +348,19 @@ app.post('/api/auth/signup', async (req, res) => {
     trade: (trade || '').trim(),
     phone: (phone || '').trim(),
     plan: 'trial',
-    trialEndsAt,
+    trialEndsAt: hasPromo ? promoTrialEnd : standardTrialEnd,
     subscriptionStatus: 'trialing',
+    promoCode: hasPromo ? 'dro' : null,
   });
 
-  console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}`);
+  console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}${hasPromo ? ' | promo:dro (complimentary trial)' : ''}`);
   mailer.sendWelcome(user.email, user.name).catch(() => {});
 
   const token = signToken(user);
   res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
 
-  // If Stripe configured, create checkout session
-  if (stripe && req.body.plan && req.body.plan !== 'trial') {
+  // If Stripe configured, create checkout session (skip for complimentary promo users)
+  if (!hasPromo && stripe && req.body.plan && req.body.plan !== 'trial') {
     const priceIds = {
       starter: process.env.STRIPE_STARTER_PRICE_ID,
       growth:  process.env.STRIPE_GROWTH_PRICE_ID,

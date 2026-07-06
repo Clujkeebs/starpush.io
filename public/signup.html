@@ -84,6 +84,15 @@
             </div>
           </div>
 
+          <div class="sf-field" style="margin-top:4px">
+            <label class="sf-lbl" for="s-promo">Promo Code <span class="sf-opt">(optional)</span></label>
+            <div style="position:relative">
+              <input class="sf-inp" type="text" id="s-promo" placeholder="Enter promo code" autocomplete="off" style="text-transform:lowercase" />
+              <span id="promo-badge" style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);background:#059669;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;letter-spacing:.4px">FREE TRIAL ✓</span>
+            </div>
+            <div id="promo-hint" style="font-size:12px;margin-top:4px;min-height:16px"></div>
+          </div>
+
           <div id="sf-error" class="sf-error hidden"></div>
 
           <button class="sf-submit" type="submit" id="sf-btn">
@@ -170,6 +179,27 @@
       if (emailField) emailField.value = prefillEmail;
     }
 
+    // ── Promo code live feedback ─────────────────────────────────────────
+    const promoInput = document.getElementById('s-promo');
+    const promoBadge = document.getElementById('promo-badge');
+    const promoHint  = document.getElementById('promo-hint');
+
+    promoInput.addEventListener('input', () => {
+      const val = promoInput.value.trim().toLowerCase();
+      if (val === 'dro') {
+        promoBadge.style.display = 'inline-block';
+        promoHint.textContent    = '🎉 Promo applied — your free trial is on us!';
+        promoHint.style.color    = '#059669';
+      } else if (val.length > 0) {
+        promoBadge.style.display = 'none';
+        promoHint.textContent    = 'Invalid promo code.';
+        promoHint.style.color    = '#dc2626';
+      } else {
+        promoBadge.style.display = 'none';
+        promoHint.textContent    = '';
+      }
+    });
+
     const form     = document.getElementById('signup-form');
     const btn      = document.getElementById('sf-btn');
     const btnTxt   = document.getElementById('sf-btn-txt');
@@ -215,9 +245,10 @@
             email,
             password,
             businessName: biz,
-            trade: document.getElementById('s-trade').value,
-            phone: document.getElementById('s-phone').value.trim(),
-            plan:  plan || 'trial',
+            trade:     document.getElementById('s-trade').value,
+            phone:     document.getElementById('s-phone').value.trim(),
+            plan:      plan || 'trial',
+            promoCode: promoInput.value.trim().toLowerCase(),
           }),
         });
 
