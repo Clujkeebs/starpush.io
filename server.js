@@ -105,8 +105,22 @@ async function sendTwilioSMS(toNumber, messageBody) {
     body: new URLSearchParams({ To: toNumber, From: fromNumber, Body: messageBody }).toString(),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.message || `Twilio error HTTP ${response.status}`);
+  if (!response.ok) throw new Error(friendlyTwilioError(data, response.status));
   return data;
+}
+
+// Twilio's raw errors are written for developers ("The number +1XXX is
+// unverified. Trial accounts cannot..."). Translate the common ones into
+// plain-English guidance a business owner can act on.
+function friendlyTwilioError(data, httpStatus) {
+  const code = data && data.code;
+  if (code === 21608) return 'Texting is in test mode: the SMS account (Twilio) is still a free trial, which can only text pre-verified numbers. Fix: upgrade the Twilio account at twilio.com (add billing) — then texts will send to any number.';
+  if (code === 21211) return 'That phone number isn\'t a valid mobile number. Double-check the digits and try again.';
+  if (code === 21610) return 'This customer previously replied STOP and unsubscribed — Twilio blocks further texts to them.';
+  if (code === 21614) return 'That number can\'t receive SMS (it may be a landline). Try a mobile number.';
+  if (code === 20003) return 'SMS service authentication failed — the Twilio credentials on the server are wrong or expired.';
+  if (code === 21606 || code === 21659) return 'The sending phone number isn\'t valid for this Twilio account — check TWILIO_PHONE_NUMBER on the server.';
+  return (data && data.message) || `Twilio error HTTP ${httpStatus}`;
 }
 
 // ── Anthropic AI reply (SEO-Turbo) ───────────────────────────────────────────
@@ -145,7 +159,18 @@ function friendlyAIError(err) {
 }
 
 // ── AI Growth Coach (Insights Agent) ─────────────────────────────────────────
-async function generateAIInsights({ user, feedData, customerCount }) {
+// Helpers shared by the coach report and coach action execution: who's due a
+// follow-up text and who was added but never texted.
+function coachDueFollowups(userId) {
+  const cutoff = Date.now() - 3 * 86400000;
+  return db.getCustomers(userId).filter(c =>
+    c.status === 'sent' && (c.smsCount || 0) < 2 && c.lastSmsAt && new Date(c.lastSmsAt).getTime() <= cutoff);
+}
+function coachPendingCustomers(userId) {
+  return db.getCustomers(userId).filter(c => c.status === 'pending');
+}
+
+async function generateAIInsights({ user, feedData, customers, memory }) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('Anthropic API key not configured.');
   const Anthropic = require('@anthropic-ai/sdk');
   const client    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -160,23 +185,33 @@ async function generateAIInsights({ user, feedData, customerCount }) {
   const week1 = reviews.filter(r => now - new Date(r.timestamp) < 7  * 86400000).length;
   const week2 = reviews.filter(r => { const a = now - new Date(r.timestamp); return a >= 7*86400000 && a < 14*86400000; }).length;
 
+  // The coach sees everything the app knows about this business — profile
+  // setup state, the customer pipeline, and its own notes from past sessions.
+  const dueFollowups     = coachDueFollowups(user.id);
+  const pendingCustomers = coachPendingCustomers(user.id);
   const ctx = {
     businessName:     user.businessName || 'Your Business',
+    ownerFirstName:   (user.name || '').split(' ')[0] || null,
     trade:            user.trade || 'local service',
     totalSMSSent:     smsSent.length,
     totalReviews:     reviews.length,
     avgRating,
-    customerCount:    customerCount || 0,
+    customerCount:    (customers || []).length,
     reviewsThisWeek:  week1,
     reviewsLastWeek:  week2,
     negativeReviews:  reviews.filter(r => r.rating <= 2).length,
-    recentCities:     [...new Set(reviews.slice(0,10).map(r=>r.city).filter(Boolean))].slice(0,3),
-    recentServices:   [...new Set(reviews.slice(0,10).map(r=>r.service).filter(Boolean))].slice(0,3),
+    recentCities:     [...new Set([...reviews.slice(0,10), ...(customers || []).slice(0,15)].map(r=>r.city).filter(Boolean))].slice(0,3),
+    recentServices:   [...new Set([...reviews.slice(0,10), ...(customers || []).slice(0,15)].map(r=>r.service).filter(Boolean))].slice(0,4),
+    customersDueFollowup:   dueFollowups.length,
+    customersNeverTexted:   pendingCustomers.length,
+    hasGoogleReviewLink:    !!user.googleReviewLink,
+    hasCustomSmsTemplate:   !!user.smsTemplate,
+    previousCoachNotes:     memory || 'None yet — this is your first session with this business.',
   };
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001', max_tokens: 1400,
-    system: `You are a brutally honest AI growth coach for local service businesses. Analyse this business data and return a personalised weekly growth report. Return ONLY valid JSON — no markdown, no code fences.
+    model: 'claude-haiku-4-5-20251001', max_tokens: 1800,
+    system: `You are a brutally honest AI growth coach for local service businesses. You work with this business week after week: "previousCoachNotes" is what you learned about them in past sessions — build on it, don't start from scratch. Analyse this business data and return a personalised weekly growth report. Return ONLY valid JSON — no markdown, no code fences.
 
 Required structure (follow exactly):
 {
@@ -189,15 +224,18 @@ Required structure (follow exactly):
       "icon": "<single emoji>",
       "title": "<5-8 word title>",
       "body": "<2 sentences using their actual numbers>",
-      "cta": "<specific action to take right now>"
+      "cta": "<specific action to take right now>",
+      "action": <"send_followups"|"text_pending_customers"|null>
     }
   ],
   "projection": "<e.g. At this pace you'll reach 50 reviews by April>",
   "rankingTip": "<one hyper-specific Google Maps ranking tip for their exact trade and city>",
-  "coachMessage": "<2-sentence direct, personal message to the business owner — use their first name if available>"
+  "coachMessage": "<2-sentence direct, personal message to the business owner — use their first name if available>",
+  "businessMemory": "<your UPDATED private notes about this business, max 500 chars: trade, market, momentum, habits, what worked, what to watch next session. Carry forward the useful parts of previousCoachNotes.>"
 }
 
-Rules: Always generate 3-5 insights. Use real numbers. Be specific not generic. If they have 0 reviews, focus on getting started. If low ratings, address that. Always include at least one 'win' if there's anything positive.`,
+Rules: Always generate 3-5 insights. Use real numbers. Be specific not generic. If they have 0 reviews, focus on getting started. If low ratings, address that. Always include at least one 'win' if there's anything positive.
+Action buttons: "action" makes the insight EXECUTABLE — the app sends real SMS when the owner clicks it. Set "send_followups" ONLY if customersDueFollowup > 0 (texts a review reminder to those customers). Set "text_pending_customers" ONLY if customersNeverTexted > 0 (sends the first review request to customers who were added but never texted). Use each action at most once; otherwise use null.`,
     messages: [{ role: 'user', content: JSON.stringify(ctx) }],
   });
 
@@ -237,10 +275,10 @@ async function generateGBPOptimization({ businessName, category, city, services,
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('Anthropic API key not configured.');
   const Anthropic = require('@anthropic-ai/sdk');
   const client    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const userMsg   = [`Google Business Profile URL: ${gbpUrl || 'Not provided'}`, `Business Name: ${businessName}`, `Trade / GBP Category: ${category}`, `City: ${city}`, `Services Offered: ${services || 'Not specified'}`, `Current GBP Description: ${currentDescription || 'None provided'}`, `Website: ${website || 'Not provided'}`].join('\n');
+  const userMsg   = [`Google Business Profile URL: ${gbpUrl || 'Not provided'}`, `Business Name: ${businessName}`, `Trade / GBP Category: ${category}`, `City: ${city}`, `Services Offered: ${services || 'Not specified — infer the 6-10 most common services this trade offers in this market and base the report on those'}`, `Current GBP Description: ${currentDescription || 'None provided'}`, `Website: ${website || 'Not provided'}`].join('\n');
   const message = await client.messages.create({
     model: 'claude-sonnet-4-6', max_tokens: 4096,
-    system: `You are a Google Business Profile (GBP) optimization expert and local SEO specialist with 10+ years of experience helping local service businesses rank #1 on Google Maps.\n\nAnalyze the business and return a comprehensive, specific, actionable optimization report.\n\nRULES:\n- Be specific — use the actual city, trade name, and service names in every recommendation\n- Use real, exact GBP category names as Google lists them\n- Every Q&A answer must mention the city and service naturally for local SEO\n- Google Posts must be 80-100 words, conversational, keyword-rich\n- Score based on what they told you: no description = low description score, etc.\n- Return ONLY valid JSON — no markdown, no code fences, no text outside the JSON\n\nRequired JSON structure (follow exactly):\n{\n  "score": { "overall": <0-100>, "description": <0-100>, "categories": <0-100>, "photos": <0-100>, "posts": <0-100>, "qanda": <0-100>, "verdict": "<2 sentences>" },\n  "optimizedDescription": "<250-300 char description>",\n  "descriptionKeywords": ["<kw>","<kw>","<kw>","<kw>","<kw>"],\n  "categories": { "primary": "<exact GBP category>", "additional": ["<cat>","<cat>","<cat>","<cat>"] },\n  "photoChecklist": [{"photo":"<desc>","priority":"Critical","why":"<why>"},{"photo":"<photo>","priority":"High","why":"<why>"},{"photo":"<photo>","priority":"High","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"}],\n  "qaTemplates": [{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"}],\n  "contentCalendar": [{"week":"Week 1","postType":"Offer","title":"<title>","body":"<80-100 word body>","cta":"<cta>"},{"week":"Week 2","postType":"Update","title":"<title>","body":"<body>","cta":"<cta>"},{"week":"Week 3","postType":"Tip","title":"<title>","body":"<body>","cta":"<cta>"},{"week":"Week 4","postType":"Highlight","title":"<title>","body":"<body>","cta":"<cta>"}],\n  "keywords": { "primary": ["<kw>","<kw>","<kw>"], "longTail": ["<kw>","<kw>","<kw>","<kw>"], "avoidTerms": ["<term>","<term>","<term>"], "replyTip": "<tip>" },\n  "completenessItems": [{"item":"<item>","priority":"Critical","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"}],\n  "quickWins": [{"action":"<action>","impact":"High","time":"5 min","why":"<why>"},{"action":"<action>","impact":"High","time":"<time>","why":"<why>"},{"action":"<action>","impact":"High","time":"<time>","why":"<why>"},{"action":"<action>","impact":"Medium","time":"<time>","why":"<why>"},{"action":"<action>","impact":"Medium","time":"<time>","why":"<why>"}]\n}`,
+    system: `You are a Google Business Profile (GBP) optimization expert and local SEO specialist with 10+ years of experience helping local service businesses rank #1 on Google Maps.\n\nAnalyze the business and return a comprehensive, specific, actionable optimization report.\n\nRULES:\n- Be specific — use the actual city, trade name, and service names in every recommendation\n- Use real, exact GBP category names as Google lists them\n- Every Q&A answer must mention the city and service naturally for local SEO\n- Google Posts must be 80-100 words, conversational, keyword-rich\n- Score based on what they told you: no description = low description score, etc.\n- If services were not specified, infer the most common services for the trade and city and use them everywhere a service name is needed — do NOT lower any score just because services were inferred\n- Return ONLY valid JSON — no markdown, no code fences, no text outside the JSON\n\nRequired JSON structure (follow exactly):\n{\n  "score": { "overall": <0-100>, "description": <0-100>, "categories": <0-100>, "photos": <0-100>, "posts": <0-100>, "qanda": <0-100>, "verdict": "<2 sentences>" },\n  "optimizedDescription": "<250-300 char description>",\n  "descriptionKeywords": ["<kw>","<kw>","<kw>","<kw>","<kw>"],\n  "categories": { "primary": "<exact GBP category>", "additional": ["<cat>","<cat>","<cat>","<cat>"] },\n  "photoChecklist": [{"photo":"<desc>","priority":"Critical","why":"<why>"},{"photo":"<photo>","priority":"High","why":"<why>"},{"photo":"<photo>","priority":"High","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"}],\n  "qaTemplates": [{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"}],\n  "contentCalendar": [{"week":"Week 1","postType":"Offer","title":"<title>","body":"<80-100 word body>","cta":"<cta>"},{"week":"Week 2","postType":"Update","title":"<title>","body":"<body>","cta":"<cta>"},{"week":"Week 3","postType":"Tip","title":"<title>","body":"<body>","cta":"<cta>"},{"week":"Week 4","postType":"Highlight","title":"<title>","body":"<body>","cta":"<cta>"}],\n  "keywords": { "primary": ["<kw>","<kw>","<kw>"], "longTail": ["<kw>","<kw>","<kw>","<kw>"], "avoidTerms": ["<term>","<term>","<term>"], "replyTip": "<tip>" },\n  "completenessItems": [{"item":"<item>","priority":"Critical","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"}],\n  "quickWins": [{"action":"<action>","impact":"High","time":"5 min","why":"<why>"},{"action":"<action>","impact":"High","time":"<time>","why":"<why>"},{"action":"<action>","impact":"High","time":"<time>","why":"<why>"},{"action":"<action>","impact":"Medium","time":"<time>","why":"<why>"},{"action":"<action>","impact":"Medium","time":"<time>","why":"<why>"}]\n}`,
     messages: [{ role: 'user', content: userMsg }],
   });
   const raw   = message.content[0].text;
@@ -581,12 +619,15 @@ app.get('/api/stripe/portal', requireAuth, async (req, res) => {
 function buildSMSFromTemplate(tpl, name, service, link, customTemplate, businessName) {
   const biz = (businessName || '').trim();
   if (tpl === 'custom' && customTemplate) {
-    return customTemplate
+    const msg = customTemplate
       .replace(/\{name\}/gi, name)
       .replace(/\{service\}/gi, service)
       .replace(/\{business\}/gi, biz || 'our team')
       .replace(/\{reviewLink\}/gi, link)
       .replace(/\{link\}/gi, link);
+    // A review request without the review link is a wasted text — if the
+    // custom template forgot the {link} placeholder, tack the link on.
+    return msg.includes(link) ? msg : `${msg} ${link}`;
   }
   if (tpl === 'brief')
     return `Hi ${name}! Quick favour — could you leave ${biz || 'us'} a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`;
@@ -885,7 +926,13 @@ app.post('/api/insights', requireAuth, requireActiveAPI, async (req, res) => {
   try {
     const feedData      = db.getFeed(req.user.id);
     const customers     = db.getCustomers(req.user.id);
-    const insights      = await generateAIInsights({ user: req.user, feedData, customerCount: customers.length });
+    const memory        = db.getCoachMemory(req.user.id);
+    const insights      = await generateAIInsights({ user: req.user, feedData, customers, memory });
+
+    // Persist the coach's updated notes so next session builds on this one
+    if (insights.businessMemory) {
+      try { db.setCoachMemory(req.user.id, String(insights.businessMemory).slice(0, 2000)); } catch {}
+    }
 
     // Compute weekly review + SMS counts (last 8 weeks) to power the chart
     const now = Date.now();
@@ -912,12 +959,69 @@ app.post('/api/insights', requireAuth, requireActiveAPI, async (req, res) => {
       smsLastWeek:     smsFeed.filter(r => { const t = new Date(r.timestamp).getTime(); return t >= lastWeekStart && t < thisWeekStart; }).length,
     };
 
-    return res.json({ success: true, insights, weeklyReviews, weekSnapshot });
+    // Counts for the executable action buttons ("Send 4 follow-ups now")
+    const actionCounts = {
+      send_followups:         coachDueFollowups(req.user.id).length,
+      text_pending_customers: coachPendingCustomers(req.user.id).length,
+    };
+
+    return res.json({ success: true, insights, weeklyReviews, weekSnapshot, actionCounts });
   } catch (err) {
     console.error('[Insights]', err.message);
     const friendly = friendlyAIError(err);
     return res.status(502).json({ error: friendly });
   }
+});
+
+// POST /api/coach/execute — the Growth Coach actually does the task.
+// Strict allowlist: each action maps to a concrete, bounded in-app operation.
+app.post('/api/coach/execute', requireAuth, requireActiveAPI, async (req, res) => {
+  const { action } = req.body;
+  const CAP  = 25; // safety cap per click — no runaway blasts
+  const link = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const biz  = (req.user.businessName || '').trim();
+
+  if (action === 'send_followups') {
+    const due = coachDueFollowups(req.user.id).slice(0, CAP);
+    if (!due.length) return res.json({ success: true, sent: 0, failed: 0, message: 'No customers are due a follow-up right now.' });
+    let sent = 0, failed = 0, lastError = null;
+    for (const c of due) {
+      const normPhone = normalizePhone(c.phone);
+      if (!normPhone) { failed++; continue; }
+      const body = `Hi ${c.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${link}. Thanks!`;
+      try {
+        const r = await sendTwilioSMS(normPhone, body);
+        db.updateCustomer(c.id, { lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, status: 'followup_sent' });
+        db.addFeedEntry({ userId: req.user.id, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: r.sid, error: null, customerId: c.id });
+        sent++;
+      } catch (err) { failed++; lastError = err.message; }
+    }
+    console.log(`[Coach] ${req.user.email} executed send_followups: ${sent} sent, ${failed} failed`);
+    if (!sent && lastError) return res.status(502).json({ error: lastError });
+    return res.json({ success: true, sent, failed, message: `Sent follow-ups to ${sent} customer${sent === 1 ? '' : 's'}${failed ? ` (${failed} failed)` : ''}.` });
+  }
+
+  if (action === 'text_pending_customers') {
+    const pending = coachPendingCustomers(req.user.id).slice(0, CAP);
+    if (!pending.length) return res.json({ success: true, sent: 0, failed: 0, message: 'No pending customers to text.' });
+    let sent = 0, failed = 0, lastError = null;
+    for (const c of pending) {
+      const normPhone = normalizePhone(c.phone);
+      if (!normPhone) { failed++; continue; }
+      const body = buildSMSFromTemplate(req.user.smsTemplate ? 'custom' : 'standard', c.name, c.service, link, req.user.smsTemplate, biz);
+      try {
+        const r = await sendTwilioSMS(normPhone, body);
+        db.updateCustomer(c.id, { lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, status: 'sent' });
+        db.addFeedEntry({ userId: req.user.id, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: r.sid, error: null, customerId: c.id });
+        sent++;
+      } catch (err) { failed++; lastError = err.message; }
+    }
+    console.log(`[Coach] ${req.user.email} executed text_pending_customers: ${sent} sent, ${failed} failed`);
+    if (!sent && lastError) return res.status(502).json({ error: lastError });
+    return res.json({ success: true, sent, failed, message: `Sent review requests to ${sent} customer${sent === 1 ? '' : 's'}${failed ? ` (${failed} failed)` : ''}.` });
+  }
+
+  return res.status(400).json({ error: 'Unknown coach action.' });
 });
 
 // POST /api/recovery-script — Review Shield recovery plan
@@ -1026,7 +1130,9 @@ app.post('/api/demo-reply', async (req, res) => {
 // POST /api/optimize
 app.post('/api/optimize', async (req, res) => {
   const { businessName, category, city, services, currentDescription, website, email, gbpUrl } = req.body;
-  if (!businessName || !category || !city || !services) return res.status(400).json({ error: 'businessName, category, city, and services are required.' });
+  // Services are optional — the AI infers the typical service list for the
+  // trade when the owner doesn't spell it out.
+  if (!businessName || !category || !city) return res.status(400).json({ error: 'businessName, category, and city are required.' });
 
   // Track lead if email provided (from free ranking calculator)
   if (email && email.includes('@')) {
@@ -1108,6 +1214,9 @@ setInterval(async () => {
       try {
         const user = db.getUser(c.userId);
         if (!user) continue;
+        // Don't keep texting on behalf of accounts whose trial/subscription
+        // has ended — access gating applies to automation too.
+        if (!hasActiveAccess(user)) continue;
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) { console.warn(`[Auto-Followup] skipping ${c.name}: invalid phone`); continue; }
         const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';

@@ -58,6 +58,12 @@ sqlite.exec(`
     data      TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS coach_memory (
+    user_id    TEXT PRIMARY KEY REFERENCES users(id),
+    memory     TEXT,
+    updated_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS audit_leads (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT,
@@ -78,6 +84,18 @@ try { sqlite.exec('ALTER TABLE users ADD COLUMN google_review_link TEXT'); } cat
 try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_template TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN promo_code TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
+
+// One-time cleanup: lowercase + trim stored emails so lookups always match.
+// Row-by-row so a rare case-only duplicate (unique constraint) skips instead
+// of aborting the whole cleanup.
+try {
+  const dirty = sqlite.prepare("SELECT id, email FROM users WHERE email != lower(trim(email))").all();
+  const fix   = sqlite.prepare('UPDATE users SET email = ? WHERE id = ?');
+  for (const row of dirty) {
+    try { fix.run(row.email.trim().toLowerCase(), row.id); } catch {}
+  }
+  if (dirty.length) console.log(`[db] Normalized ${dirty.length} user email(s) to lowercase.`);
+} catch {}
 
 // ── Indexes ──────────────────────────────────────────────────────────────────
 
@@ -137,7 +155,10 @@ function camelToSnake(key) {
 const stmts = {
   // Users
   getUserById:         sqlite.prepare('SELECT * FROM users WHERE id = ?'),
-  getUserByEmail:      sqlite.prepare('SELECT * FROM users WHERE email = ?'),
+  // COLLATE NOCASE: accounts migrated from users.json kept their original
+  // casing (e.g. "Bob@Example.com"), but login lowercases input — a binary
+  // match would say "No account found" for a real account.
+  getUserByEmail:      sqlite.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE'),
   getUserByResetToken:       sqlite.prepare('SELECT * FROM users WHERE reset_token = ?'),
   getUserByStripeCustomerId: sqlite.prepare('SELECT * FROM users WHERE stripe_customer_id = ?'),
   getAllUsers:     sqlite.prepare('SELECT * FROM users ORDER BY created_at DESC'),
@@ -180,6 +201,13 @@ const stmts = {
   getFeedByUser: sqlite.prepare('SELECT * FROM activity_feed WHERE user_id = ? ORDER BY timestamp DESC'),
   getFeedAll:    sqlite.prepare('SELECT * FROM activity_feed ORDER BY timestamp DESC'),
   clearFeed:     sqlite.prepare('DELETE FROM activity_feed'),
+
+  // Coach memory
+  getCoachMemory: sqlite.prepare('SELECT memory FROM coach_memory WHERE user_id = ?'),
+  setCoachMemory: sqlite.prepare(`
+    INSERT INTO coach_memory (user_id, memory, updated_at) VALUES (@user_id, @memory, @updated_at)
+    ON CONFLICT(user_id) DO UPDATE SET memory = @memory, updated_at = @updated_at
+  `),
 
   // Audit leads
   insertAuditLead: sqlite.prepare(`
@@ -257,6 +285,17 @@ db.deleteUser = function deleteUser(id) {
 
 db.getAllUsers = function getAllUsers() {
   return stmts.getAllUsers.all().map(rowToCamel);
+};
+
+// ── Coach memory (the Growth Coach's evolving notes about a business) ────────
+
+db.getCoachMemory = function getCoachMemory(userId) {
+  const row = stmts.getCoachMemory.get(userId);
+  return row ? row.memory : null;
+};
+
+db.setCoachMemory = function setCoachMemory(userId, memory) {
+  stmts.setCoachMemory.run({ user_id: userId, memory, updated_at: new Date().toISOString() });
 };
 
 // ── Customers ────────────────────────────────────────────────────────────────
