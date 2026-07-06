@@ -79,6 +79,29 @@ function requireActiveAPI(req, res, next) {
   return res.status(402).json({ error: 'Your free trial has ended. Upgrade to keep sending review requests.', upgrade: '/upgrade' });
 }
 
+// ── Plan SMS quotas ───────────────────────────────────────────────────────────
+// Each plan advertises a monthly SMS cap on the pricing page — without
+// enforcing it here, a Starter customer paying a flat $49/mo could send
+// unlimited texts while the business absorbs the Twilio cost.
+const PLAN_SMS_LIMITS = { trial: 150, starter: 150, growth: 600, pro: Infinity };
+function smsLimitFor(user) {
+  return PLAN_SMS_LIMITS[user.plan] ?? 150;
+}
+function smsUsedThisMonth(userId) {
+  const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
+  return db.getFeed(userId).filter(i => i.type === 'sms_sent' && new Date(i.timestamp) >= startOfMonth).length;
+}
+function smsQuotaRemaining(user) {
+  const limit = smsLimitFor(user);
+  return limit === Infinity ? Infinity : Math.max(0, limit - smsUsedThisMonth(user.id));
+}
+// Route guard for single-send endpoints — blocks the request outright once
+// the plan's monthly SMS allowance is used up.
+function requireSmsQuota(req, res, next) {
+  if (smsQuotaRemaining(req.user) > 0) return next();
+  return res.status(402).json({ error: `You've used all ${smsLimitFor(req.user)} SMS included in your plan this month. Upgrade for a higher limit.`, upgrade: '/upgrade' });
+}
+
 // ── Twilio SMS ────────────────────────────────────────────────────────────────
 // Twilio requires E.164 (+15551234567). Tradespeople type local formats like
 // (555) 123-4567 — accept those and normalize. Returns null if unusable.
@@ -456,6 +479,9 @@ app.get('/api/auth/me', (req, res) => {
   const user = getUser(req);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   const { passwordHash, resetToken, resetExpires, ...safe } = user;
+  // Lets the account page show real SMS connection status instead of a
+  // hardcoded "Connected" that lies when Twilio isn't configured yet.
+  safe.smsConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER);
   res.json(safe);
 });
 
@@ -636,7 +662,7 @@ function buildSMSFromTemplate(tpl, name, service, link, customTemplate, business
   return `Hi ${name}, thanks for choosing ${biz || 'us'} for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`;
 }
 
-app.post('/api/send-request', requireAuth, requireActiveAPI, async (req, res) => {
+app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, async (req, res) => {
   const { customerName, phone, service, city, reviewLink, template } = req.body;
   if (!customerName || !phone || !service) return res.status(400).json({ error: 'customerName, phone, and service are required.' });
 
@@ -697,12 +723,21 @@ app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
 
   const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const results = [];
+  let remaining = smsQuotaRemaining(req.user);
+  const batchPhones = new Set();
 
   for (const c of customers) {
     const name  = (c.name  || '').trim();
     const phone = normalizePhone(c.phone);
     if (!name || !c.phone) { results.push({ name, phone: c.phone, status: 'skipped', error: 'missing name or phone' }); continue; }
     if (!phone) { results.push({ name, phone: c.phone, status: 'skipped', error: 'invalid phone number' }); continue; }
+    const digits = phone.replace(/\D/g, '');
+    if (batchPhones.has(digits)) { results.push({ name, phone, status: 'skipped', error: 'duplicate in this batch' }); continue; }
+    const block = recentContactBlock(req.user.id, phone);
+    if (block) { results.push({ name, phone, status: 'skipped', error: block }); continue; }
+    if (remaining <= 0) { results.push({ name, phone, status: 'skipped', error: `monthly SMS limit reached (${smsLimitFor(req.user)}/mo) — upgrade to send more` }); continue; }
+    remaining--;
+    batchPhones.add(digits);
 
     const smsBody = buildSMSFromTemplate(template, name, service.trim(), link, req.user.smsTemplate, req.user.businessName);
     const bulkCustId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
@@ -735,6 +770,23 @@ app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
 // computes the timestamp so timezones just work).
 // ════════════════════════════════════════════════════════════════════════════
 
+// Repeat-customer cooldown — for businesses whose clients come in daily or
+// weekly (barbershops, restaurants, cleaners), re-uploading the same regular
+// every visit shouldn't either (a) spam them with a review ask every time,
+// or (b) permanently blacklist them the moment they're texted once. A
+// rolling cooldown does both: skip while recent, allow again once it's past.
+const REPEAT_CUSTOMER_COOLDOWN_DAYS = 30;
+function recentContactBlock(userId, normPhone) {
+  const digits  = normPhone.replace(/\D/g, '');
+  const matches = db.getCustomers(userId).filter(c => (c.phone || '').replace(/\D/g, '') === digits);
+  if (!matches.length) return null;
+  if (matches.some(c => c.status === 'scheduled')) return 'already scheduled for a text';
+  const cutoff = Date.now() - REPEAT_CUSTOMER_COOLDOWN_DAYS * 86400000;
+  if (matches.some(c => c.lastSmsAt && new Date(c.lastSmsAt).getTime() > cutoff))
+    return `texted within the last ${REPEAT_CUSTOMER_COOLDOWN_DAYS} days — repeat customers aren't re-asked that often`;
+  return null;
+}
+
 app.post('/api/customers/upload', requireAuth, requireActiveAPI, (req, res) => {
   const { customers, sendAt } = req.body;
   if (!Array.isArray(customers) || customers.length === 0)
@@ -752,8 +804,9 @@ app.post('/api/customers/upload', requireAuth, requireActiveAPI, (req, res) => {
   if (when.getTime() > Date.now() + 30 * 86400000)
     return res.status(400).json({ error: 'The send time is more than 30 days away — pick a closer date.' });
 
-  // Never double-text: skip numbers already in this user's list
-  const existingPhones = new Set(db.getCustomers(req.user.id).map(c => (c.phone || '').replace(/\D/g, '')));
+  // Catches duplicates pasted twice within this same upload — separate from
+  // the rolling cooldown check against past uploads (see recentContactBlock).
+  const batchPhones = new Set();
 
   let added = 0;
   const skipped = [];
@@ -763,8 +816,11 @@ app.post('/api/customers/upload', requireAuth, requireActiveAPI, (req, res) => {
     if (!name || !rawPh) { skipped.push({ name: name || '(no name)', reason: 'missing name or phone' }); continue; }
     const normPhone = normalizePhone(rawPh);
     if (!normPhone) { skipped.push({ name, reason: `invalid phone "${rawPh}"` }); continue; }
-    if (existingPhones.has(normPhone.replace(/\D/g, ''))) { skipped.push({ name, reason: 'already in your customer list' }); continue; }
-    existingPhones.add(normPhone.replace(/\D/g, ''));
+    const digits = normPhone.replace(/\D/g, '');
+    if (batchPhones.has(digits)) { skipped.push({ name, reason: 'duplicate in this upload' }); continue; }
+    const block = recentContactBlock(req.user.id, normPhone);
+    if (block) { skipped.push({ name, reason: block }); continue; }
+    batchPhones.add(digits);
 
     db.createCustomer({
       id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
@@ -790,11 +846,19 @@ setInterval(async () => {
     const due = db.getScheduledDue();
     if (!due.length) return;
     let sentTotal = 0;
+    const quotaCache = new Map(); // userId -> remaining, refreshed once per tick
     for (const c of due.slice(0, 100)) {
       try {
         const user = db.getUser(c.userId);
         if (!user) continue;
         if (!hasActiveAccess(user)) continue; // access gating applies to scheduled sends too
+        if (!quotaCache.has(user.id)) quotaCache.set(user.id, smsQuotaRemaining(user));
+        const remaining = quotaCache.get(user.id);
+        if (remaining <= 0) {
+          db.updateCustomer(c.id, { status: 'pending', sendAt: null });
+          console.warn(`[Scheduled Send] ${c.name}: monthly SMS limit reached for ${user.email} — moved to Not sent`);
+          continue;
+        }
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) {
           db.updateCustomer(c.id, { status: 'pending', sendAt: null });
@@ -806,6 +870,7 @@ setInterval(async () => {
         await sendTwilioSMS(normPhone, body);
         db.updateCustomer(c.id, { status: 'sent', lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, sendAt: null });
         db.addFeedEntry({ userId: c.userId, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: null, error: null, customerId: c.id });
+        quotaCache.set(user.id, remaining - 1);
         sentTotal++;
       } catch (err) {
         // Twilio failed — move to 'pending' (Not sent) so the owner can retry
@@ -841,10 +906,12 @@ app.post('/api/customers', requireAuth, requireActiveAPI, async (req, res) => {
     smsCount: 0,
   };
 
-  // Attempt initial SMS — gracefully no-op if Twilio isn't configured
+  // Attempt initial SMS — gracefully no-op if Twilio isn't configured or the
+  // plan's monthly SMS quota is used up (customer record is still saved).
   const link    = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const smsBody = buildSMSFromTemplate('standard', custData.name, custData.service, link, null, req.user.businessName);
   try {
+    if (smsQuotaRemaining(req.user) <= 0) throw new Error(`Monthly SMS limit reached (${smsLimitFor(req.user)}/mo) — upgrade to send more.`);
     await sendTwilioSMS(custData.phone, smsBody);
     custData.status    = 'sent';
     custData.lastSmsAt = new Date().toISOString();
@@ -977,10 +1044,8 @@ app.get('/api/stats', requireAuth, (req, res) => {
     else if (d > 0) break;
   }
 
-  const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0,0,0,0);
-  const smsThisMonth = feed.filter(i => i.type === 'sms_sent' && new Date(i.timestamp) >= startOfMonth).length;
-  const planLimits = { trial: 150, starter: 150, growth: 600, pro: Infinity };
-  const smsLimit = planLimits[req.user.plan] ?? 150;
+  const smsThisMonth = smsUsedThisMonth(req.user.id);
+  const smsLimit = smsLimitFor(req.user);
 
   res.json({ smsSent, reviews, avgRating, replies, reviewsThisWeek, reviewsLastWeek, smsThisWeek, smsLastWeek, conversionRate, streak, smsThisMonth, smsLimit });
 });
@@ -1068,9 +1133,11 @@ app.post('/api/insights', requireAuth, requireActiveAPI, async (req, res) => {
 // Strict allowlist: each action maps to a concrete, bounded in-app operation.
 app.post('/api/coach/execute', requireAuth, requireActiveAPI, async (req, res) => {
   const { action } = req.body;
-  const CAP  = 25; // safety cap per click — no runaway blasts
+  const CAP  = Math.min(25, smsQuotaRemaining(req.user)); // safety cap per click — no runaway blasts, and never exceed the plan's quota
   const link = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const biz  = (req.user.businessName || '').trim();
+
+  if (CAP <= 0) return res.status(402).json({ error: `You've used all ${smsLimitFor(req.user)} SMS included in your plan this month. Upgrade to send more.`, upgrade: '/upgrade' });
 
   if (action === 'send_followups') {
     const due = coachDueFollowups(req.user.id).slice(0, CAP);
@@ -1317,6 +1384,7 @@ if (process.env.NODE_ENV === 'production') {
 setInterval(async () => {
   try {
     const due = db.getFollowUpDue();
+    const quotaCache = new Map();
     for (const c of due) {
       try {
         const user = db.getUser(c.userId);
@@ -1324,6 +1392,10 @@ setInterval(async () => {
         // Don't keep texting on behalf of accounts whose trial/subscription
         // has ended — access gating applies to automation too.
         if (!hasActiveAccess(user)) continue;
+        if (!quotaCache.has(user.id)) quotaCache.set(user.id, smsQuotaRemaining(user));
+        const remaining = quotaCache.get(user.id);
+        if (remaining <= 0) { console.warn(`[Auto-Followup] skipping ${c.name}: monthly SMS limit reached for ${user.email}`); continue; }
+        quotaCache.set(user.id, remaining - 1);
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) { console.warn(`[Auto-Followup] skipping ${c.name}: invalid phone`); continue; }
         const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';
