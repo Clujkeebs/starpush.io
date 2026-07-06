@@ -729,6 +729,97 @@ app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
+// CLIENT UPLOAD + SCHEDULED SENDS
+// Upload today's new clients in one go; review requests go out automatically
+// at the chosen time (default: noon tomorrow, owner's local time — the client
+// computes the timestamp so timezones just work).
+// ════════════════════════════════════════════════════════════════════════════
+
+app.post('/api/customers/upload', requireAuth, requireActiveAPI, (req, res) => {
+  const { customers, sendAt } = req.body;
+  if (!Array.isArray(customers) || customers.length === 0)
+    return res.status(400).json({ error: 'customers array is required.' });
+  if (customers.length > 200)
+    return res.status(400).json({ error: 'Maximum 200 customers per upload.' });
+
+  // sendAt: ISO timestamp. Must parse, be in the future (small grace), and
+  // within 30 days — protects against typos scheduling texts for next year.
+  const when = new Date(sendAt);
+  if (!sendAt || isNaN(when.getTime()))
+    return res.status(400).json({ error: 'sendAt must be a valid date/time.' });
+  if (when.getTime() < Date.now() - 60000)
+    return res.status(400).json({ error: 'The send time is in the past — pick a future time.' });
+  if (when.getTime() > Date.now() + 30 * 86400000)
+    return res.status(400).json({ error: 'The send time is more than 30 days away — pick a closer date.' });
+
+  // Never double-text: skip numbers already in this user's list
+  const existingPhones = new Set(db.getCustomers(req.user.id).map(c => (c.phone || '').replace(/\D/g, '')));
+
+  let added = 0;
+  const skipped = [];
+  for (const c of customers) {
+    const name  = (c.name || '').trim();
+    const rawPh = (c.phone || '').trim();
+    if (!name || !rawPh) { skipped.push({ name: name || '(no name)', reason: 'missing name or phone' }); continue; }
+    const normPhone = normalizePhone(rawPh);
+    if (!normPhone) { skipped.push({ name, reason: `invalid phone "${rawPh}"` }); continue; }
+    if (existingPhones.has(normPhone.replace(/\D/g, ''))) { skipped.push({ name, reason: 'already in your customer list' }); continue; }
+    existingPhones.add(normPhone.replace(/\D/g, ''));
+
+    db.createCustomer({
+      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      userId: req.user.id,
+      name,
+      phone: normPhone,
+      service: (c.service || '').trim() || (req.user.trade || 'service'),
+      city: (c.city || '').trim(),
+      status: 'scheduled',
+      sendAt: when.toISOString(),
+      smsCount: 0,
+    });
+    added++;
+  }
+
+  console.log(`[Upload] ${req.user.email}: ${added} scheduled for ${when.toISOString()}, ${skipped.length} skipped`);
+  res.json({ success: true, added, skipped, sendAt: when.toISOString() });
+});
+
+// Scheduled-send worker — every 2 minutes, send any due scheduled texts.
+setInterval(async () => {
+  try {
+    const due = db.getScheduledDue();
+    if (!due.length) return;
+    let sentTotal = 0;
+    for (const c of due.slice(0, 100)) {
+      try {
+        const user = db.getUser(c.userId);
+        if (!user) continue;
+        if (!hasActiveAccess(user)) continue; // access gating applies to scheduled sends too
+        const normPhone = normalizePhone(c.phone);
+        if (!normPhone) {
+          db.updateCustomer(c.id, { status: 'pending', sendAt: null });
+          console.warn(`[Scheduled Send] ${c.name}: invalid phone — moved to Not sent`);
+          continue;
+        }
+        const link = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+        const body = buildSMSFromTemplate(user.smsTemplate ? 'custom' : 'standard', c.name, c.service, link, user.smsTemplate, user.businessName);
+        await sendTwilioSMS(normPhone, body);
+        db.updateCustomer(c.id, { status: 'sent', lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, sendAt: null });
+        db.addFeedEntry({ userId: c.userId, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: null, error: null, customerId: c.id });
+        sentTotal++;
+      } catch (err) {
+        // Twilio failed — move to 'pending' (Not sent) so the owner can retry
+        // manually instead of the worker hammering a broken send every 2 min.
+        db.updateCustomer(c.id, { status: 'pending', sendAt: null });
+        db.addFeedEntry({ userId: c.userId, type: 'sms_sent', customerName: c.name, phone: c.phone, service: c.service, city: c.city || '', message: '', status: 'failed', twilioSid: null, error: err.message, customerId: c.id });
+        console.error('[Scheduled Send] failed for', c.name, '—', err.message);
+      }
+    }
+    if (sentTotal) console.log(`[Scheduled Send] sent ${sentTotal} queued review request(s)`);
+  } catch (err) { console.error('[Scheduled Send] worker error:', err.message); }
+}, 2 * 60 * 1000);
+
+// ════════════════════════════════════════════════════════════════════════════
 // CUSTOMERS API
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -1127,8 +1218,23 @@ app.post('/api/demo-reply', async (req, res) => {
   }
 });
 
+// Light per-IP rate limit for the public optimizer — it calls the Anthropic
+// API on your dime, so bots hammering it would cost real money.
+const optimizeHits = new Map(); // ip -> [timestamps]
+function optimizeRateLimit(req, res, next) {
+  if (getUser(req)) return next(); // signed-in users aren't limited
+  const ip  = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+  const now = Date.now();
+  const hits = (optimizeHits.get(ip) || []).filter(t => now - t < 60 * 60 * 1000);
+  if (hits.length >= 5) return res.status(429).json({ error: 'You\'ve reached the free audit limit for now — create a free account for unlimited audits.' });
+  hits.push(now);
+  optimizeHits.set(ip, hits);
+  if (optimizeHits.size > 5000) optimizeHits.clear(); // crude memory guard
+  next();
+}
+
 // POST /api/optimize
-app.post('/api/optimize', async (req, res) => {
+app.post('/api/optimize', optimizeRateLimit, async (req, res) => {
   const { businessName, category, city, services, currentDescription, website, email, gbpUrl } = req.body;
   // Services are optional — the AI infers the typical service list for the
   // trade when the owner doesn't spell it out.
@@ -1177,8 +1283,9 @@ app.post('/api/gbp-starter', requireAuth, requireActiveAPI, async (req, res) => 
 // ════════════════════════════════════════════════════════════════════════════
 
 app.get('/',                    (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
-app.get('/login',               (_req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
-app.get('/signup',              (_req, res) => res.sendFile(path.join(__dirname, 'public', 'signup.html')));
+// Already-signed-in users go straight to the dashboard instead of a login form
+app.get('/login',               (req, res) => getUser(req) ? res.redirect('/dashboard') : res.sendFile(path.join(__dirname, 'public', 'login.html')));
+app.get('/signup',              (req, res) => getUser(req) ? res.redirect('/dashboard') : res.sendFile(path.join(__dirname, 'public', 'signup.html')));
 app.get('/pricing',             (_req, res) => res.redirect('/#pricing'));
 app.get('/upgrade',             requireAuth, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'upgrade.html')));
 app.get('/ranking-calculator',  (_req, res) => res.sendFile(path.join(__dirname, 'public', 'ranking-calculator.html')));

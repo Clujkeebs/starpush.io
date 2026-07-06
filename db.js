@@ -84,6 +84,7 @@ try { sqlite.exec('ALTER TABLE users ADD COLUMN google_review_link TEXT'); } cat
 try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_template TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN promo_code TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
+try { sqlite.exec('ALTER TABLE customers ADD COLUMN send_at TEXT'); } catch {}
 
 // One-time cleanup: lowercase + trim stored emails so lookups always match.
 // Row-by-row so a rare case-only duplicate (unique constraint) skips instead
@@ -128,6 +129,7 @@ const SNAKE_TO_CAMEL = {
   last_sms_at:            'lastSmsAt',
   followup_at:            'followUpAt',
   sms_count:              'smsCount',
+  send_at:                'sendAt',
   gbp_url:                'gbpUrl',
 };
 
@@ -179,9 +181,9 @@ const stmts = {
   getCustomerById:    sqlite.prepare('SELECT * FROM customers WHERE id = ?'),
   insertCustomer:     sqlite.prepare(`
     INSERT INTO customers (id, user_id, name, phone, service, city,
-                           added_at, status, last_sms_at, followup_at, sms_count)
+                           added_at, status, last_sms_at, followup_at, sms_count, send_at)
     VALUES (@id, @user_id, @name, @phone, @service, @city,
-            @added_at, @status, @last_sms_at, @followup_at, @sms_count)
+            @added_at, @status, @last_sms_at, @followup_at, @sms_count, @send_at)
   `),
   deleteCustomer:       sqlite.prepare('DELETE FROM customers WHERE id = ?'),
   deleteCustomersByUser: sqlite.prepare('DELETE FROM customers WHERE user_id = ?'),
@@ -191,6 +193,12 @@ const stmts = {
       AND sms_count < 2
       AND last_sms_at IS NOT NULL
       AND datetime(last_sms_at) <= datetime('now', '-3 days')
+  `),
+  getScheduledDue:      sqlite.prepare(`
+    SELECT * FROM customers
+    WHERE status = 'scheduled'
+      AND send_at IS NOT NULL
+      AND datetime(send_at) <= datetime('now')
   `),
 
   // Activity feed
@@ -321,6 +329,7 @@ db.createCustomer = function createCustomer(data) {
     last_sms_at: data.lastSmsAt  || null,
     followup_at: data.followUpAt || null,
     sms_count:   data.smsCount   || 0,
+    send_at:     data.sendAt     || null,
   };
   stmts.insertCustomer.run(params);
   return db.getCustomer(params.id);
@@ -346,6 +355,10 @@ db.deleteCustomer = function deleteCustomer(id) {
 
 db.getFollowUpDue = function getFollowUpDue() {
   return stmts.getFollowUpDue.all().map(rowToCamel);
+};
+
+db.getScheduledDue = function getScheduledDue() {
+  return stmts.getScheduledDue.all().map(rowToCamel);
 };
 
 // ── Activity Feed ────────────────────────────────────────────────────────────
@@ -489,6 +502,7 @@ db.migrateFromJSON = function migrateFromJSON() {
             last_sms_at: c.lastSmsAt  || null,
             followup_at: c.followUpAt || null,
             sms_count:   c.smsCount   || 0,
+            send_at:     c.sendAt     || null,
           });
           count++;
         }

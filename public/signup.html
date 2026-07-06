@@ -34,18 +34,18 @@
           <div class="sf-row">
             <div class="sf-field">
               <label class="sf-lbl" for="s-name">Your Name *</label>
-              <input class="sf-inp" type="text" id="s-name" placeholder="Sarah Thompson" required />
+              <input class="sf-inp" type="text" id="s-name" placeholder="Sarah Thompson" autocomplete="name" required />
             </div>
             <div class="sf-field">
               <label class="sf-lbl" for="s-email">Email Address *</label>
-              <input class="sf-inp" type="email" id="s-email" placeholder="sarah@austinhvac.com" required />
+              <input class="sf-inp" type="email" id="s-email" placeholder="sarah@austinhvac.com" autocomplete="email" autocapitalize="none" autocorrect="off" spellcheck="false" required />
             </div>
           </div>
 
           <div class="sf-field">
             <label class="sf-lbl" for="s-password">Password <span style="font-size:11px;color:#6b7280">(min. 8 characters)</span></label>
             <div style="position:relative">
-              <input class="sf-inp" type="password" id="s-password" placeholder="Choose a secure password" required style="padding-right:42px" />
+              <input class="sf-inp" type="password" id="s-password" placeholder="Choose a secure password" autocomplete="new-password" required style="padding-right:42px" />
               <button type="button" id="pw-toggle" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:16px;color:#9ca3af;padding:4px;line-height:1" title="Show password">👁</button>
             </div>
             <div class="pw-strength" id="pw-strength">
@@ -56,7 +56,7 @@
 
           <div class="sf-field">
             <label class="sf-lbl" for="s-biz">Business Name *</label>
-            <input class="sf-inp" type="text" id="s-biz" placeholder="Austin HVAC Pros" required />
+            <input class="sf-inp" type="text" id="s-biz" placeholder="Austin HVAC Pros" autocomplete="organization" required />
           </div>
 
           <div class="sf-row">
@@ -80,7 +80,7 @@
             </div>
             <div class="sf-field">
               <label class="sf-lbl" for="s-phone">Business Phone <span class="sf-opt">(optional)</span></label>
-              <input class="sf-inp" type="tel" id="s-phone" placeholder="+1 (512) 555-0100" />
+              <input class="sf-inp" type="tel" id="s-phone" placeholder="+1 (512) 555-0100" autocomplete="tel" />
             </div>
           </div>
 
