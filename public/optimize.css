@@ -162,6 +162,7 @@ a.o-logo-by:hover { color: #fbbf24; }
   margin-bottom: 14px;
 }
 .o-error.hidden { display: none; }
+.o-inp.hidden   { display: none; }
 
 /* Analyze button */
 .o-analyze-btn {
