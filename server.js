@@ -2,6 +2,7 @@ require('dotenv').config();
 const express      = require('express');
 const cors         = require('cors');
 const path         = require('path');
+const crypto        = require('crypto');
 const cookieParser = require('cookie-parser');
 const bcrypt       = require('bcryptjs');
 const jwt          = require('jsonwebtoken');
@@ -10,7 +11,11 @@ const mailer       = require('./mailer');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+app.set('trust proxy', 1);
 const JWT_SECRET = process.env.JWT_SECRET || 'starpush-dev-secret-change-in-production';
+const PROMO_CODE = (process.env.PROMO_CODE || '').trim().toLowerCase();
+const HAIKU_MODEL = process.env.ANTHROPIC_MODEL_HAIKU || 'claude-haiku-4-5-20251001';
+const SONNET_MODEL = process.env.ANTHROPIC_MODEL_SONNET || 'claude-sonnet-4-6';
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   console.error('FATAL: JWT_SECRET must be set in production — anyone could forge login tokens with the default secret.');
   process.exit(1);
@@ -23,12 +28,52 @@ if (process.env.STRIPE_SECRET_KEY) {
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(cors());
+function allowedOrigin(origin) {
+  if (!origin) return true;
+  const configured = process.env.APP_URL;
+  if (configured && !configured.includes('localhost') && !configured.includes('onrender.com')) {
+    return origin === configured.replace(/\/+$/, '');
+  }
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+}
+app.use(cors({ origin: (origin, callback) => callback(null, allowedOrigin(origin)) }));
 app.use(cookieParser());
 // Raw body for Stripe webhooks BEFORE json parser
 app.use('/api/stripe/webhook', express.raw({ type: 'application/json' }));
-app.use(express.json());
+app.use('/api/webhook/twilio-inbound', express.urlencoded({ extended: false }));
+app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+function requestOrigin(req) {
+  const configured = process.env.APP_URL;
+  if (configured && !configured.includes('localhost') && !configured.includes('onrender.com')) {
+    return configured.replace(/\/+$/, '');
+  }
+  return `${req.protocol}://${req.get('host')}`;
+}
+function requireSameOrigin(req, res, next) {
+  const origin = req.get('origin') || req.get('referer');
+  if (origin) {
+    try {
+      if (new URL(origin).origin !== requestOrigin(req)) {
+        return res.status(403).json({ error: 'Cross-origin request rejected.' });
+      }
+    } catch {
+      return res.status(403).json({ error: 'Invalid request origin.' });
+    }
+  }
+  next();
+}
+app.use((err, _req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ error: 'Request body must contain valid JSON.' });
+  }
+  next(err);
+});
+app.use('/api', (req, res, next) => {
+  if (['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return requireSameOrigin(req, res, next);
+  next();
+});
 
 // ── App URL helper — uses APP_URL env unless it's a localhost/render URL ───────
 function getAppUrl(req) {
@@ -89,16 +134,22 @@ function smsLimitFor(user) {
 }
 function smsUsedThisMonth(userId) {
   const startOfMonth = new Date(); startOfMonth.setDate(1); startOfMonth.setHours(0, 0, 0, 0);
-  return db.getFeed(userId).filter(i => i.type === 'sms_sent' && new Date(i.timestamp) >= startOfMonth).length;
+  return db.getFeed(userId, true).filter(i =>
+    i.type === 'sms_sent' &&
+    (i.status === 'delivered' || i.status === 'sent') &&
+    new Date(i.timestamp) >= startOfMonth
+  ).length;
 }
 function smsQuotaRemaining(user) {
   const limit = smsLimitFor(user);
   return limit === Infinity ? Infinity : Math.max(0, limit - smsUsedThisMonth(user.id));
 }
-// Route guard for single-send endpoints — blocks the request outright once
-// the plan's monthly SMS allowance is used up.
+function requireSmsQuotaForUser(user) {
+  if (smsQuotaRemaining(user) > 0) return true;
+  return false;
+}
 function requireSmsQuota(req, res, next) {
-  if (smsQuotaRemaining(req.user) > 0) return next();
+  if (requireSmsQuotaForUser(req.user)) return next();
   return res.status(402).json({ error: `You've used all ${smsLimitFor(req.user)} SMS included in your plan this month. Upgrade for a higher limit.`, upgrade: '/upgrade' });
 }
 
@@ -128,8 +179,46 @@ async function sendTwilioSMS(toNumber, messageBody) {
     body: new URLSearchParams({ To: toNumber, From: fromNumber, Body: messageBody }).toString(),
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(friendlyTwilioError(data, response.status));
+  if (!response.ok) {
+    const err = new Error(friendlyTwilioError(data, response.status));
+    err.code = data && data.code;
+    throw err;
+  }
   return data;
+}
+
+async function sendSMSWithQuota(user, toNumber, messageBody) {
+  const normPhone = normalizePhone(toNumber);
+  if (!normPhone) throw new Error('That phone number is invalid.');
+  const digits = normPhone.replace(/\D/g, '');
+  const optedOut = db.getCustomers(user.id).some(c =>
+    c.optedOut && (c.phone || '').replace(/\D/g, '') === digits);
+  if (optedOut) throw new Error('This customer has opted out of SMS.');
+  if (!requireSmsQuotaForUser(user)) {
+    throw new Error(`Monthly SMS limit reached (${smsLimitFor(user)}/mo) — upgrade to send more.`);
+  }
+  try {
+    return await sendTwilioSMS(normPhone, messageBody);
+  } catch (err) {
+    if (Number(err.code) === 21610) {
+      for (const customer of db.getCustomers(user.id)) {
+        if ((customer.phone || '').replace(/\D/g, '') === digits) {
+          db.updateCustomer(customer.id, { optedOut: true });
+        }
+      }
+    }
+    throw err;
+  }
+}
+
+function markPhoneOptedOut(userId, phone) {
+  const digits = normalizePhone(phone)?.replace(/\D/g, '');
+  if (!digits) return;
+  for (const customer of db.getCustomers(userId)) {
+    if ((customer.phone || '').replace(/\D/g, '') === digits) {
+      db.updateCustomer(customer.id, { optedOut: true });
+    }
+  }
 }
 
 // Twilio's raw errors are written for developers ("The number +1XXX is
@@ -146,6 +235,24 @@ function friendlyTwilioError(data, httpStatus) {
   return (data && data.message) || `Twilio error HTTP ${httpStatus}`;
 }
 
+// Twilio inbound webhook: configure this URL as the messaging webhook for the
+// sending number. STOP-style replies suppress future sends for that account.
+app.post('/api/webhook/twilio-inbound', (req, res) => {
+  const body = String(req.body.Body || '').trim().toUpperCase();
+  const from = normalizePhone(req.body.From);
+  if (!from) return res.type('text/xml').send('<Response></Response>');
+  const optedOut = ['STOP', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'].includes(body);
+  const optIn = ['START', 'UNSTOP', 'YES'].includes(body);
+  if (optedOut || optIn) {
+    const digits = from.replace(/\D/g, '');
+    for (const customer of db.getAllCustomers().filter(c =>
+      (c.phone || '').replace(/\D/g, '') === digits)) {
+      db.updateCustomer(customer.id, { optedOut });
+    }
+  }
+  res.type('text/xml').send('<Response></Response>');
+});
+
 // ── Anthropic AI reply (SEO-Turbo) ───────────────────────────────────────────
 async function generateAIReply(reviewText, service, city, rating) {
   if (!process.env.ANTHROPIC_API_KEY) throw new Error('Anthropic API key not configured.');
@@ -158,7 +265,7 @@ async function generateAIReply(reviewText, service, city, rating) {
     : `You are a local SEO specialist writing Google Business Profile review replies for a ${service || 'local service'} business in ${city || 'our area'}. Write a warm, genuine 2-3 sentence reply that: (1) thanks the customer, ideally by first name if mentioned, (2) works in the specific service (${service || 'our work'}) and city (${city || 'the local area'}) naturally — this boosts Google Maps ranking, (3) ends with a forward-looking sentence. Sound human. Never use "We appreciate your feedback" or robotic openers.`;
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001', max_tokens: 280,
+    model: HAIKU_MODEL, max_tokens: 280,
     system,
     messages: [{ role: 'user', content: `Write a reply to this ${rating}-star Google review:\n\n"${reviewText}"` }],
   });
@@ -179,6 +286,31 @@ function friendlyAIError(err) {
   if (msg.includes('overloaded'))
     return 'AI service is temporarily overloaded. Try again in 30 seconds.';
   return 'AI service returned an unexpected error. Please try again.';
+}
+
+const authRateMap = new Map();
+function authRateLimit(req, res, next) {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const key = `${req.ip}:${email}`;
+  const now = Date.now();
+  const hits = (authRateMap.get(key) || []).filter(t => now - t < 15 * 60 * 1000);
+  if (hits.length >= 10) return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+  hits.push(now);
+  authRateMap.set(key, hits);
+  if (authRateMap.size > 5000) {
+    for (const [k, values] of authRateMap) {
+      if (!values.some(t => now - t < 15 * 60 * 1000)) authRateMap.delete(k);
+    }
+  }
+  next();
+}
+function maxString(value, max, field) {
+  if (value != null && String(value).length > max) {
+    const err = new Error(`${field} is too long.`);
+    err.status = 400;
+    throw err;
+  }
+  return value;
 }
 
 // ── AI Growth Coach (Insights Agent) ─────────────────────────────────────────
@@ -233,7 +365,7 @@ async function generateAIInsights({ user, feedData, customers, memory }) {
   };
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001', max_tokens: 1800,
+    model: HAIKU_MODEL, max_tokens: 1800,
     system: `You are a brutally honest AI growth coach for local service businesses. You work with this business week after week: "previousCoachNotes" is what you learned about them in past sessions — build on it, don't start from scratch. Analyse this business data and return a personalised weekly growth report. Return ONLY valid JSON — no markdown, no code fences.
 
 Required structure (follow exactly):
@@ -275,7 +407,7 @@ async function generateRecoveryScript({ reviewText, reviewerName, service, city,
   const client    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001', max_tokens: 700,
+    model: HAIKU_MODEL, max_tokens: 700,
     system: `You are a customer recovery expert for local trades businesses. Generate a tactical recovery plan for a negative Google review. Return ONLY valid JSON:
 {
   "publicReply": "<empathetic 2-3 sentence public reply that naturally includes service + city for SEO>",
@@ -300,7 +432,7 @@ async function generateGBPOptimization({ businessName, category, city, services,
   const client    = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const userMsg   = [`Google Business Profile URL: ${gbpUrl || 'Not provided'}`, `Business Name: ${businessName}`, `Trade / GBP Category: ${category}`, `City: ${city}`, `Services Offered: ${services || 'Not specified — infer the 6-10 most common services this trade offers in this market and base the report on those'}`, `Current GBP Description: ${currentDescription || 'None provided'}`, `Website: ${website || 'Not provided'}`].join('\n');
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 4096,
+    model: SONNET_MODEL, max_tokens: 4096,
     system: `You are a Google Business Profile (GBP) optimization expert and local SEO specialist with 10+ years of experience helping local service businesses rank #1 on Google Maps.\n\nAnalyze the business and return a comprehensive, specific, actionable optimization report.\n\nRULES:\n- Be specific — use the actual city, trade name, and service names in every recommendation\n- Use real, exact GBP category names as Google lists them\n- Every Q&A answer must mention the city and service naturally for local SEO\n- Google Posts must be 80-100 words, conversational, keyword-rich\n- Score based on what they told you: no description = low description score, etc.\n- If services were not specified, infer the most common services for the trade and city and use them everywhere a service name is needed — do NOT lower any score just because services were inferred\n- Return ONLY valid JSON — no markdown, no code fences, no text outside the JSON\n\nRequired JSON structure (follow exactly):\n{\n  "score": { "overall": <0-100>, "description": <0-100>, "categories": <0-100>, "photos": <0-100>, "posts": <0-100>, "qanda": <0-100>, "verdict": "<2 sentences>" },\n  "optimizedDescription": "<250-300 char description>",\n  "descriptionKeywords": ["<kw>","<kw>","<kw>","<kw>","<kw>"],\n  "categories": { "primary": "<exact GBP category>", "additional": ["<cat>","<cat>","<cat>","<cat>"] },\n  "photoChecklist": [{"photo":"<desc>","priority":"Critical","why":"<why>"},{"photo":"<photo>","priority":"High","why":"<why>"},{"photo":"<photo>","priority":"High","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"},{"photo":"<photo>","priority":"Medium","why":"<why>"}],\n  "qaTemplates": [{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"},{"question":"<q>","answer":"<a>"}],\n  "contentCalendar": [{"week":"Week 1","postType":"Offer","title":"<title>","body":"<80-100 word body>","cta":"<cta>"},{"week":"Week 2","postType":"Update","title":"<title>","body":"<body>","cta":"<cta>"},{"week":"Week 3","postType":"Tip","title":"<title>","body":"<body>","cta":"<cta>"},{"week":"Week 4","postType":"Highlight","title":"<title>","body":"<body>","cta":"<cta>"}],\n  "keywords": { "primary": ["<kw>","<kw>","<kw>"], "longTail": ["<kw>","<kw>","<kw>","<kw>"], "avoidTerms": ["<term>","<term>","<term>"], "replyTip": "<tip>" },\n  "completenessItems": [{"item":"<item>","priority":"Critical","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"High","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"},{"item":"<item>","priority":"Medium","howTo":"<howto>"}],\n  "quickWins": [{"action":"<action>","impact":"High","time":"5 min","why":"<why>"},{"action":"<action>","impact":"High","time":"<time>","why":"<why>"},{"action":"<action>","impact":"High","time":"<time>","why":"<why>"},{"action":"<action>","impact":"Medium","time":"<time>","why":"<why>"},{"action":"<action>","impact":"Medium","time":"<time>","why":"<why>"}]\n}`,
     messages: [{ role: 'user', content: userMsg }],
   });
@@ -325,7 +457,7 @@ async function generateGBPStarter({ businessName, category, city, services, hasP
   ].join('\n');
 
   const message = await client.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 3500,
+    model: SONNET_MODEL, max_tokens: 3500,
     system: `You are a Google Business Profile onboarding specialist. Your job is to walk a brand-new local service business through setting up their Google Business Profile (GBP) from zero, in plain, friendly, jargon-free language.
 
 This is a STARTER program — assume the owner has never done this before. Be encouraging and concrete. Give them everything they need to copy-paste so they can finish setup in one sitting.
@@ -383,45 +515,47 @@ Generate 6-8 steps covering at minimum: create the profile, verify it, set the p
 
 // POST /api/auth/signup
 app.post('/api/auth/signup', async (req, res) => {
-  const { name, email, password, businessName, trade, phone, promoCode } = req.body;
-  if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required.' });
-  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  try {
+    const { name, email, password, businessName, trade, phone, promoCode } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required.' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    for (const [value, max, field] of [[name, 120, 'Name'], [email, 254, 'Email'], [businessName, 160, 'Business name'], [trade, 80, 'Trade'], [phone, 40, 'Phone']]) {
+      maxString(value, max, field);
+    }
 
-  if (db.getUserByEmail(email.toLowerCase().trim())) {
-    return res.status(409).json({ error: 'An account with that email already exists. Please log in.' });
-  }
+    if (db.getUserByEmail(email.toLowerCase().trim())) {
+      return res.status(409).json({ error: 'An account with that email already exists. Please log in.' });
+    }
 
-  // Promo code 'dro' grants an owner-controlled complimentary free trial:
-  // full access, framed as a normal trial, with the trial clock set far in the
-  // future. The owner can end it at any time (see PROMO.md) by setting the
-  // user's trialEndsAt to the past — that flips them to "free trial expired"
-  // and gates features behind payment WITHOUT deleting any of their data.
-  const hasPromo = (promoCode || '').trim().toLowerCase() === 'dro';
-  const hash = await bcrypt.hash(password, 10);
-  const standardTrialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
-  const promoTrialEnd    = new Date('2099-12-31T23:59:59.000Z').toISOString();
-  const user = db.createUser({
-    id: 'u_' + Date.now(),
-    name: name.trim(),
-    email: email.toLowerCase().trim(),
-    passwordHash: hash,
-    businessName: (businessName || '').trim(),
-    trade: (trade || '').trim(),
-    phone: (phone || '').trim(),
-    plan: 'trial',
-    trialEndsAt: hasPromo ? promoTrialEnd : standardTrialEnd,
-    subscriptionStatus: 'trialing',
-    promoCode: hasPromo ? 'dro' : null,
-  });
+    const suppliedPromo = (promoCode || '').trim().toLowerCase();
+    const hasPromo = PROMO_CODE && suppliedPromo &&
+      PROMO_CODE.length === suppliedPromo.length &&
+      crypto.timingSafeEqual(Buffer.from(PROMO_CODE), Buffer.from(suppliedPromo));
+    const hash = await bcrypt.hash(password, 10);
+    const standardTrialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    const promoTrialEnd = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const user = db.createUser({
+      id: crypto.randomUUID(),
+      name: name.trim(),
+      email: email.toLowerCase().trim(),
+      passwordHash: hash,
+      businessName: (businessName || '').trim(),
+      trade: (trade || '').trim(),
+      phone: (phone || '').trim(),
+      plan: 'trial',
+      trialEndsAt: hasPromo ? promoTrialEnd : standardTrialEnd,
+      subscriptionStatus: 'trialing',
+      promoCode: hasPromo ? 'promo' : null,
+    });
 
-  console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}${hasPromo ? ' | promo:dro (complimentary trial)' : ''}`);
-  mailer.sendWelcome(user.email, user.name).catch(() => {});
+    console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}${hasPromo ? ' | promo trial' : ''}`);
+    mailer.sendWelcome(user.email, user.name).catch(() => {});
 
-  const token = signToken(user);
-  res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
+    const token = signToken(user);
+    res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
 
-  // If Stripe configured, create checkout session (skip for complimentary promo users)
-  if (!hasPromo && stripe && req.body.plan && req.body.plan !== 'trial') {
+    // If Stripe configured, create checkout session (skip for complimentary promo users)
+    if (!hasPromo && stripe && req.body.plan && req.body.plan !== 'trial') {
     const priceIds = {
       starter: process.env.STRIPE_STARTER_PRICE_ID,
       growth:  process.env.STRIPE_GROWTH_PRICE_ID,
@@ -447,19 +581,27 @@ app.post('/api/auth/signup', async (req, res) => {
     }
   }
 
-  res.json({ success: true, redirect: '/dashboard?welcome=1' });
+    res.json({ success: true, redirect: '/dashboard?welcome=1' });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'An account with that email already exists. Please log in.' });
+    }
+    if (err.status === 400) return res.status(400).json({ error: err.message });
+    console.error('[Signup]', err.message);
+    res.status(500).json({ error: 'Could not create your account right now. Please try again.' });
+  }
 });
 
 // POST /api/auth/login
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authRateLimit, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
 
   const user = db.getUserByEmail(email.toLowerCase().trim());
-  if (!user) return res.status(401).json({ error: 'No account found with that email.' });
+  if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
 
   const valid = await bcrypt.compare(password, user.passwordHash);
-  if (!valid) return res.status(401).json({ error: 'Incorrect password.' });
+  if (!valid) return res.status(401).json({ error: 'Invalid email or password.' });
 
   const token = signToken(user);
   res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
@@ -495,6 +637,9 @@ app.patch('/api/auth/me', requireAuth, (req, res) => {
   if (typeof phone === 'string')             fields.phone = phone.trim();
   if (typeof googleReviewLink === 'string')  fields.googleReviewLink = googleReviewLink.trim();
   if (typeof smsTemplate === 'string')       fields.smsTemplate = smsTemplate.trim();
+  for (const [value, max, field] of [[name, 120, 'Name'], [businessName, 160, 'Business name'], [trade, 80, 'Trade'], [phone, 40, 'Phone'], [googleReviewLink, 500, 'Review link'], [smsTemplate, 1000, 'SMS template']]) {
+    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
+  }
   const user = db.updateUser(req.user.id, fields);
   if (!user) return res.status(404).json({ error: 'User not found.' });
   const { passwordHash, ...safe } = user;
@@ -522,15 +667,20 @@ app.post('/api/auth/delete-account', requireAuth, (req, res) => {
 });
 
 // POST /api/auth/forgot-password
-app.post('/api/auth/forgot-password', (req, res) => {
+app.post('/api/auth/forgot-password', authRateLimit, (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email is required.' });
+  if (email.length > 254) return res.status(400).json({ error: 'Email is too long.' });
+  if (process.env.NODE_ENV === 'production' &&
+      !(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)) {
+    return res.status(503).json({ error: 'Password reset email is not configured. Please contact support.' });
+  }
   const user = db.getUserByEmail(email.toLowerCase().trim());
   if (user) {
-    const token = require('crypto').randomBytes(32).toString('hex');
+    const token = crypto.randomBytes(32).toString('hex');
     db.updateUser(user.id, { resetToken: token, resetExpires: String(Date.now() + 60 * 60 * 1000) });
     const url = `${getAppUrl(req)}/reset-password?token=${token}`;
-    console.log(`[Password Reset] ${user.email} → ${url}`);
+    console.log(`[Password Reset] reset requested for ${user.email}`);
     mailer.sendPasswordReset(user.email, url).catch(() => {});
   }
   // Always respond success so we don't leak whether the email exists
@@ -665,6 +815,9 @@ function buildSMSFromTemplate(tpl, name, service, link, customTemplate, business
 app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, async (req, res) => {
   const { customerName, phone, service, city, reviewLink, template } = req.body;
   if (!customerName || !phone || !service) return res.status(400).json({ error: 'customerName, phone, and service are required.' });
+  for (const [value, max, field] of [[customerName, 120, 'Customer name'], [phone, 40, 'Phone'], [service, 120, 'Service'], [city, 120, 'City'], [reviewLink, 500, 'Review link']]) {
+    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
+  }
 
   const normPhone = normalizePhone(phone);
   if (!normPhone) return res.status(400).json({ error: 'That phone number doesn\'t look right — please enter a 10-digit US number, e.g. (555) 123-4567.' });
@@ -672,18 +825,20 @@ app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, as
   const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const smsBody = buildSMSFromTemplate(template, customerName.trim(), service.trim(), link, req.user.smsTemplate, req.user.businessName);
 
-  const custId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+  const custId = crypto.randomUUID();
   const entry = { type: 'sms_sent', customerName: customerName.trim(), phone: normPhone, service: service.trim(), city: (city || '').trim(), message: smsBody, status: 'pending', twilioSid: null, error: null, customerId: custId };
 
   let twilioOk = false;
+  let twilioCode = null;
   try {
-    const result    = await sendTwilioSMS(normPhone, smsBody);
+    const result    = await sendSMSWithQuota(req.user, normPhone, smsBody);
     entry.status    = 'delivered';
     entry.twilioSid = result.sid;
     twilioOk = true;
   } catch (err) {
     entry.status = 'failed';
     entry.error  = err.message;
+    twilioCode = err.code;
     console.error('[Twilio]', err.message);
   }
 
@@ -702,6 +857,9 @@ app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, as
       lastSmsAt: twilioOk ? new Date().toISOString() : null,
       smsCount: twilioOk ? 1 : 0,
     });
+    if (!twilioOk && twilioCode === 21610) {
+      markPhoneOptedOut(req.user.id, normPhone);
+    }
   } catch (err) {
     console.error('[Customers] failed to persist customer:', err.message);
   }
@@ -720,10 +878,12 @@ app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
     return res.status(400).json({ error: 'customers array is required.' });
   if (!service)
     return res.status(400).json({ error: 'service is required.' });
+  if (service.length > 120 || String(city || '').length > 120 || String(reviewLink || '').length > 500) {
+    return res.status(400).json({ error: 'One or more fields are too long.' });
+  }
 
   const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const results = [];
-  let remaining = smsQuotaRemaining(req.user);
   const batchPhones = new Set();
 
   for (const c of customers) {
@@ -735,25 +895,25 @@ app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
     if (batchPhones.has(digits)) { results.push({ name, phone, status: 'skipped', error: 'duplicate in this batch' }); continue; }
     const block = recentContactBlock(req.user.id, phone);
     if (block) { results.push({ name, phone, status: 'skipped', error: block }); continue; }
-    if (remaining <= 0) { results.push({ name, phone, status: 'skipped', error: `monthly SMS limit reached (${smsLimitFor(req.user)}/mo) — upgrade to send more` }); continue; }
-    remaining--;
     batchPhones.add(digits);
 
     const smsBody = buildSMSFromTemplate(template, name, service.trim(), link, req.user.smsTemplate, req.user.businessName);
-    const bulkCustId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
-    let twilioOk = false, twilioSid = null, errorMsg = null;
+    const bulkCustId = crypto.randomUUID();
+    let twilioOk = false, twilioSid = null, errorMsg = null, twilioCode = null;
 
     try {
-      const r = await sendTwilioSMS(phone, smsBody);
+      const r = await sendSMSWithQuota(req.user, phone, smsBody);
       twilioOk = true; twilioSid = r.sid;
     } catch (err) {
       errorMsg = err.message;
+      twilioCode = err.code;
     }
 
     db.addFeedEntry({ userId: req.user.id, type: 'sms_sent', customerName: name, phone, service: service.trim(), city: (city || '').trim(), message: smsBody, status: twilioOk ? 'delivered' : 'failed', twilioSid, error: errorMsg, customerId: bulkCustId });
 
     try {
       db.createCustomer({ id: bulkCustId, userId: req.user.id, name, phone, service: service.trim(), city: (city || '').trim(), status: twilioOk ? 'sent' : 'pending', lastSmsAt: twilioOk ? new Date().toISOString() : null, smsCount: twilioOk ? 1 : 0 });
+      if (twilioCode === 21610) markPhoneOptedOut(req.user.id, phone);
     } catch (e) { console.error('[Bulk] customer save:', e.message); }
 
     results.push({ name, phone, status: twilioOk ? 'sent' : 'failed', error: errorMsg });
@@ -823,7 +983,7 @@ app.post('/api/customers/upload', requireAuth, requireActiveAPI, (req, res) => {
     batchPhones.add(digits);
 
     db.createCustomer({
-      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      id: crypto.randomUUID(),
       userId: req.user.id,
       name,
       phone: normPhone,
@@ -846,19 +1006,11 @@ setInterval(async () => {
     const due = db.getScheduledDue();
     if (!due.length) return;
     let sentTotal = 0;
-    const quotaCache = new Map(); // userId -> remaining, refreshed once per tick
     for (const c of due.slice(0, 100)) {
       try {
         const user = db.getUser(c.userId);
         if (!user) continue;
         if (!hasActiveAccess(user)) continue; // access gating applies to scheduled sends too
-        if (!quotaCache.has(user.id)) quotaCache.set(user.id, smsQuotaRemaining(user));
-        const remaining = quotaCache.get(user.id);
-        if (remaining <= 0) {
-          db.updateCustomer(c.id, { status: 'pending', sendAt: null });
-          console.warn(`[Scheduled Send] ${c.name}: monthly SMS limit reached for ${user.email} — moved to Not sent`);
-          continue;
-        }
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) {
           db.updateCustomer(c.id, { status: 'pending', sendAt: null });
@@ -867,15 +1019,15 @@ setInterval(async () => {
         }
         const link = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
         const body = buildSMSFromTemplate(user.smsTemplate ? 'custom' : 'standard', c.name, c.service, link, user.smsTemplate, user.businessName);
-        await sendTwilioSMS(normPhone, body);
+        const result = await sendSMSWithQuota(user, normPhone, body);
         db.updateCustomer(c.id, { status: 'sent', lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, sendAt: null });
-        db.addFeedEntry({ userId: c.userId, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: null, error: null, customerId: c.id });
-        quotaCache.set(user.id, remaining - 1);
+        db.addFeedEntry({ userId: c.userId, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: result.sid || null, error: null, customerId: c.id });
         sentTotal++;
       } catch (err) {
         // Twilio failed — move to 'pending' (Not sent) so the owner can retry
         // manually instead of the worker hammering a broken send every 2 min.
         db.updateCustomer(c.id, { status: 'pending', sendAt: null });
+        if (err.code === 21610) db.updateCustomer(c.id, { status: 'declined', sendAt: null });
         db.addFeedEntry({ userId: c.userId, type: 'sms_sent', customerName: c.name, phone: c.phone, service: c.service, city: c.city || '', message: '', status: 'failed', twilioSid: null, error: err.message, customerId: c.id });
         console.error('[Scheduled Send] failed for', c.name, '—', err.message);
       }
@@ -892,11 +1044,14 @@ setInterval(async () => {
 app.post('/api/customers', requireAuth, requireActiveAPI, async (req, res) => {
   const { name, phone, service, city } = req.body;
   if (!name || !phone || !service) return res.status(400).json({ error: 'name, phone, and service are required.' });
+  for (const [value, max, field] of [[name, 120, 'Name'], [phone, 40, 'Phone'], [service, 120, 'Service'], [city, 120, 'City']]) {
+    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
+  }
   const normPhone = normalizePhone(phone);
   if (!normPhone) return res.status(400).json({ error: 'That phone number doesn\'t look right — please enter a 10-digit US number, e.g. (555) 123-4567.' });
 
   const custData = {
-    id: 'c_' + Date.now(),
+    id: crypto.randomUUID(),
     userId: req.user.id,
     name: name.trim(),
     phone: normPhone,
@@ -910,17 +1065,33 @@ app.post('/api/customers', requireAuth, requireActiveAPI, async (req, res) => {
   // plan's monthly SMS quota is used up (customer record is still saved).
   const link    = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
   const smsBody = buildSMSFromTemplate('standard', custData.name, custData.service, link, null, req.user.businessName);
+  let twilioResult = null;
+  let twilioError = null;
   try {
-    if (smsQuotaRemaining(req.user) <= 0) throw new Error(`Monthly SMS limit reached (${smsLimitFor(req.user)}/mo) — upgrade to send more.`);
-    await sendTwilioSMS(custData.phone, smsBody);
+    twilioResult = await sendSMSWithQuota(req.user, custData.phone, smsBody);
     custData.status    = 'sent';
     custData.lastSmsAt = new Date().toISOString();
     custData.smsCount  = 1;
   } catch (err) {
+    twilioError = err.message;
+    if (err.code === 21610) custData.optedOut = true;
     console.warn('[Customers] initial SMS skipped:', err.message);
   }
 
   const customer = db.createCustomer(custData);
+  db.addFeedEntry({
+    userId: req.user.id,
+    type: 'sms_sent',
+    customerName: custData.name,
+    phone: custData.phone,
+    service: custData.service,
+    city: custData.city,
+    message: smsBody,
+    status: twilioResult ? 'delivered' : 'failed',
+    twilioSid: twilioResult?.sid || null,
+    error: twilioResult ? null : twilioError,
+    customerId: customer.id,
+  });
   res.json({ success: true, customer });
 });
 
@@ -962,16 +1133,23 @@ app.post('/api/customers/:id/send-followup', requireAuth, requireActiveAPI, asyn
   const biz  = (req.user.businessName || '').trim();
   const body = `Hi ${customer.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${customer.service} we did. Takes 30 seconds: ${link}. Thanks!`;
   try {
-    await sendTwilioSMS(normPhone, body);
+    const result = await sendSMSWithQuota(req.user, normPhone, body);
     customer = db.updateCustomer(customer.id, {
       lastSmsAt: new Date().toISOString(),
       smsCount: (customer.smsCount || 0) + 1,
       status: 'followup_sent',
     });
+    db.addFeedEntry({
+      userId: req.user.id, type: 'sms_sent', customerName: customer.name,
+      phone: normPhone, service: customer.service, city: customer.city || '',
+      message: body, status: 'delivered', twilioSid: result.sid || null,
+      error: null, customerId: customer.id,
+    });
     res.json({ success: true, customer });
   } catch (err) {
     console.error('[Customer Followup]', err.message);
-    res.status(502).json({ error: err.message });
+    const status = err.message.includes('Monthly SMS limit') ? 402 : 502;
+    res.status(status).json({ error: err.message, ...(status === 402 ? { upgrade: '/upgrade' } : {}) });
   }
 });
 
@@ -1003,6 +1181,7 @@ app.post('/api/customers/:id/mark-declined', requireAuth, (req, res) => {
 app.patch('/api/customers/:id/notes', requireAuth, (req, res) => {
   const customer = db.getCustomer(req.params.id);
   if (!customer || customer.userId !== req.user.id) return res.status(404).json({ error: 'Customer not found.' });
+  if (req.body.notes != null && String(req.body.notes).length > 2000) return res.status(400).json({ error: 'Notes are too long.' });
   db.updateCustomer(req.params.id, { notes: req.body.notes || null });
   res.json({ success: true });
 });
@@ -1025,14 +1204,15 @@ app.get('/api/stats', requireAuth, (req, res) => {
   const W14 = 14 * 86400000;
   const reviewsThisWeek = reviewEntries.filter(r => now - new Date(r.timestamp) < W7).length;
   const reviewsLastWeek = reviewEntries.filter(r => { const a = now - new Date(r.timestamp); return a >= W7 && a < W14; }).length;
-  const smsThisWeek = feed.filter(i => i.type === 'sms_sent' && now - new Date(i.timestamp) < W7).length;
-  const smsLastWeek = feed.filter(i => i.type === 'sms_sent' && (() => { const a = now - new Date(i.timestamp); return a >= W7 && a < W14; })()).length;
+  const successfulSms = i => i.type === 'sms_sent' && (i.status === 'delivered' || i.status === 'sent');
+  const smsThisWeek = feed.filter(i => successfulSms(i) && now - new Date(i.timestamp) < W7).length;
+  const smsLastWeek = feed.filter(i => successfulSms(i) && (() => { const a = now - new Date(i.timestamp); return a >= W7 && a < W14; })()).length;
 
   const conversionRate = smsSent > 0 ? Math.round((reviews / smsSent) * 100) : null;
 
   // Streak: count consecutive calendar days with at least one sms_sent
   const smsDays = new Set(
-    feed.filter(i => i.type === 'sms_sent')
+    feed.filter(successfulSms)
         .map(i => new Date(i.timestamp).toDateString())
   );
   let streak = 0;
@@ -1076,6 +1256,10 @@ app.post('/api/webhook/review', requireAuth, requireActiveAPI, async (req, res) 
 
 // GET /api/feed
 app.get('/api/feed', requireAuth, (req, res) => { res.json(db.getFeed(req.user.id)); });
+app.delete('/api/feed', requireAuth, (req, res) => {
+  db.archiveFeed(req.user.id);
+  res.json({ success: true });
+});
 
 // POST /api/insights — AI Growth Coach
 app.post('/api/insights', requireAuth, requireActiveAPI, async (req, res) => {
@@ -1148,7 +1332,7 @@ app.post('/api/coach/execute', requireAuth, requireActiveAPI, async (req, res) =
       if (!normPhone) { failed++; continue; }
       const body = `Hi ${c.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${link}. Thanks!`;
       try {
-        const r = await sendTwilioSMS(normPhone, body);
+        const r = await sendSMSWithQuota(req.user, normPhone, body);
         db.updateCustomer(c.id, { lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, status: 'followup_sent' });
         db.addFeedEntry({ userId: req.user.id, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: r.sid, error: null, customerId: c.id });
         sent++;
@@ -1168,7 +1352,7 @@ app.post('/api/coach/execute', requireAuth, requireActiveAPI, async (req, res) =
       if (!normPhone) { failed++; continue; }
       const body = buildSMSFromTemplate(req.user.smsTemplate ? 'custom' : 'standard', c.name, c.service, link, req.user.smsTemplate, biz);
       try {
-        const r = await sendTwilioSMS(normPhone, body);
+        const r = await sendSMSWithQuota(req.user, normPhone, body);
         db.updateCustomer(c.id, { lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, status: 'sent' });
         db.addFeedEntry({ userId: req.user.id, type: 'sms_sent', customerName: c.name, phone: normPhone, service: c.service, city: c.city || '', message: body, status: 'delivered', twilioSid: r.sid, error: null, customerId: c.id });
         sent++;
@@ -1206,7 +1390,7 @@ app.post('/api/generate-posts', requireAuth, requireActiveAPI, async (req, res) 
     const Anthropic = require('@anthropic-ai/sdk');
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001',
+      model: HAIKU_MODEL,
       max_tokens: 900,
       messages: [{
         role: 'user',
@@ -1245,18 +1429,23 @@ Only output the JSON array, no other text.`,
 // GET /api/leads (admin — requires ADMIN_KEY header)
 app.get('/api/leads', (req, res) => {
   const adminKey = process.env.ADMIN_KEY;
-  if (!adminKey || req.headers['x-admin-key'] !== adminKey) {
+  const supplied = String(req.headers['x-admin-key'] || '');
+  if (!adminKey || supplied.length !== adminKey.length ||
+      !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(adminKey))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   const allUsers = db.getAllUsers();
-  const safe = allUsers.map(({ passwordHash, resetToken, resetExpires, ...u }) => u);
+  const safe = allUsers.map(({ id, name, email, businessName, trade, phone, plan, trialEndsAt, subscriptionStatus, createdAt }) =>
+    ({ id, name, email, businessName, trade, phone, plan, trialEndsAt, subscriptionStatus, createdAt }));
   res.json({ count: safe.length, leads: safe });
 });
 
 // GET /api/audit-leads (admin — requires ADMIN_KEY header)
 app.get('/api/audit-leads', (req, res) => {
   const adminKey = process.env.ADMIN_KEY;
-  if (!adminKey || req.headers['x-admin-key'] !== adminKey) {
+  const supplied = String(req.headers['x-admin-key'] || '');
+  if (!adminKey || supplied.length !== adminKey.length ||
+      !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(adminKey))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   const leads = db.getAuditLeads();
@@ -1266,11 +1455,13 @@ app.get('/api/audit-leads', (req, res) => {
 // POST /api/demo-reply (public — landing page Try It Live)
 const _demoRateMap = new Map();
 app.post('/api/demo-reply', async (req, res) => {
+  const ip = req.ip;
   const minute = Math.floor(Date.now() / 60000);
-  const count  = _demoRateMap.get(minute) || 0;
-  if (count >= 50) return res.status(429).json({ error: 'Too many requests — please try again in a moment.' });
-  _demoRateMap.set(minute, count + 1);
-  for (const [k] of _demoRateMap) if (k < minute - 2) _demoRateMap.delete(k);
+  const key = `${ip}:${minute}`;
+  const count = _demoRateMap.get(key) || 0;
+  if (count >= 5) return res.status(429).json({ error: 'Too many requests — please try again in a moment.' });
+  _demoRateMap.set(key, count + 1);
+  for (const [k] of _demoRateMap) if (!k.endsWith(`:${minute}`) && !k.endsWith(`:${minute - 1}`)) _demoRateMap.delete(k);
 
   const { trade, city, reviewText, rating } = req.body;
   if (!trade || !city || !reviewText) return res.status(400).json({ error: 'Trade, city, and reviewText are required.' });
@@ -1289,8 +1480,14 @@ app.post('/api/demo-reply', async (req, res) => {
 // API on your dime, so bots hammering it would cost real money.
 const optimizeHits = new Map(); // ip -> [timestamps]
 function optimizeRateLimit(req, res, next) {
-  if (getUser(req)) return next(); // signed-in users aren't limited
-  const ip  = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+  const user = getUser(req);
+  if (user) {
+    if (!hasActiveAccess(user)) {
+      return res.status(402).json({ error: 'Your free trial has ended. Upgrade to continue using the optimizer.', upgrade: '/upgrade' });
+    }
+    return next();
+  }
+  const ip = req.ip;
   const now = Date.now();
   const hits = (optimizeHits.get(ip) || []).filter(t => now - t < 60 * 60 * 1000);
   if (hits.length >= 5) return res.status(429).json({ error: 'You\'ve reached the free audit limit for now — create a free account for unlimited audits.' });
@@ -1306,17 +1503,18 @@ app.post('/api/optimize', optimizeRateLimit, async (req, res) => {
   // Services are optional — the AI infers the typical service list for the
   // trade when the owner doesn't spell it out.
   if (!businessName || !category || !city) return res.status(400).json({ error: 'businessName, category, and city are required.' });
-
-  // Track lead if email provided (from free ranking calculator)
-  if (email && email.includes('@')) {
-    try {
-      db.addAuditLead({ email, businessName, category, city, services, website, gbpUrl });
-      console.log(`[Lead] Captured: ${email} — ${businessName} in ${city}`);
-    } catch (e) { console.error('[Lead] save failed:', e.message); }
+  for (const [value, max, field] of [[businessName, 160, 'Business name'], [category, 100, 'Category'], [city, 120, 'City'], [services, 1000, 'Services'], [currentDescription, 2000, 'Current description'], [website, 500, 'Website'], [gbpUrl, 500, 'GBP URL'], [email, 254, 'Email']]) {
+    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
   }
 
   try {
     const analysis = await generateGBPOptimization({ businessName, category, city, services, currentDescription, website, gbpUrl });
+    if (email && email.includes('@')) {
+      try {
+        db.addAuditLead({ email, businessName, category, city, services, website, gbpUrl });
+        console.log(`[Lead] Captured: ${email} — ${businessName} in ${city}`);
+      } catch (e) { console.error('[Lead] save failed:', e.message); }
+    }
     console.log(`[GBP Optimize] ${businessName} in ${city} — score ${analysis.score?.overall}`);
     return res.json({ success: true, analysis });
   } catch (err) {
@@ -1384,7 +1582,6 @@ if (process.env.NODE_ENV === 'production') {
 setInterval(async () => {
   try {
     const due = db.getFollowUpDue();
-    const quotaCache = new Map();
     for (const c of due) {
       try {
         const user = db.getUser(c.userId);
@@ -1392,23 +1589,28 @@ setInterval(async () => {
         // Don't keep texting on behalf of accounts whose trial/subscription
         // has ended — access gating applies to automation too.
         if (!hasActiveAccess(user)) continue;
-        if (!quotaCache.has(user.id)) quotaCache.set(user.id, smsQuotaRemaining(user));
-        const remaining = quotaCache.get(user.id);
-        if (remaining <= 0) { console.warn(`[Auto-Followup] skipping ${c.name}: monthly SMS limit reached for ${user.email}`); continue; }
-        quotaCache.set(user.id, remaining - 1);
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) { console.warn(`[Auto-Followup] skipping ${c.name}: invalid phone`); continue; }
         const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';
         const biz = (user.businessName || '').trim();
         const body = `Hi ${c.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${reviewLink}. Thanks!`;
+        const result = await sendSMSWithQuota(user, normPhone, body);
         db.updateCustomer(c.id, {
           lastSmsAt: new Date().toISOString(),
           smsCount: (c.smsCount || 1) + 1,
           status: 'followup_sent',
         });
-        await sendTwilioSMS(normPhone, body);
+        db.addFeedEntry({
+          userId: c.userId, type: 'sms_sent', customerName: c.name,
+          phone: normPhone, service: c.service, city: c.city || '',
+          message: body, status: 'delivered', twilioSid: result.sid || null,
+          error: null, customerId: c.id,
+        });
         console.log(`[Auto-Followup] sent to ${c.name} (${c.phone})`);
-      } catch (err) { console.error('[Auto-Followup] customer error:', err.message); }
+      } catch (err) {
+        if (err.code === 21610) db.updateCustomer(c.id, { status: 'declined' });
+        console.error('[Auto-Followup] customer error:', err.message);
+      }
     }
   } catch (err) { console.error('[Auto-Followup] scheduler error:', err.message); }
 }, 5 * 60 * 1000);
@@ -1429,11 +1631,13 @@ setInterval(async () => {
       const is7Day = hoursLeft > 6 * 24 && hoursLeft <= 7 * 24;
       // Fire the 1-day reminder in the window 0d+6h to 1d
       const is1Day = hoursLeft > 6 && hoursLeft <= 24;
-      if (is7Day) {
+      if (is7Day && !u.reminder7SentAt) {
         mailer.sendTrialReminder(u.email, u.name, 7).catch(() => {});
+        db.updateUser(u.id, { reminder7SentAt: new Date().toISOString() });
         console.log(`[Trial Reminder] 7d reminder → ${u.email}`);
-      } else if (is1Day) {
+      } else if (is1Day && !u.reminder1SentAt) {
         mailer.sendTrialReminder(u.email, u.name, 1).catch(() => {});
+        db.updateUser(u.id, { reminder1SentAt: new Date().toISOString() });
         console.log(`[Trial Reminder] 1d reminder → ${u.email}`);
       }
     }
