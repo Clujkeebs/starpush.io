@@ -904,7 +904,9 @@
           btn.disabled = true;
           try {
             if (act === 'followup') {
-              await fetch(`/api/customers/${id}/send-followup`, { method: 'POST' });
+              const res = await fetch(`/api/customers/${id}/send-followup`, { method: 'POST' });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error || 'Follow-up SMS could not be sent.');
               if (typeof toast === 'function') toast('ok', '📱 Follow-up SMS sent!');
             }
             if (act === 'reviewed') await fetch(`/api/customers/${id}/mark-reviewed`, { method: 'POST' });
@@ -916,7 +918,9 @@
               if (!confirm('Remove this customer?')) { btn.disabled = false; return; }
               await fetch(`/api/customers/${id}`, { method: 'DELETE' });
             }
-          } catch {}
+          } catch (err) {
+            if (typeof toast === 'function') toast('error', err.message || 'Follow-up SMS could not be sent.');
+          }
           await loadCustomers();
           await loadStats();
         });
@@ -981,14 +985,17 @@
           btn.disabled = true;
           btn.textContent = 'Sending…';
           try {
-            await fetch(`/api/customers/${id}/send-followup`, { method: 'POST' });
+            const res = await fetch(`/api/customers/${id}/send-followup`, { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.error || 'Follow-up SMS could not be sent.');
             btn.closest('.fu-queue-item').style.opacity = '.4';
             btn.textContent = '✓ Sent';
             if (typeof toast === 'function') toast('ok', '📱 Follow-up sent!');
             setTimeout(() => { loadCustomers(); loadStats(); }, 1200);
-          } catch {
+          } catch (err) {
             btn.disabled = false;
             btn.textContent = 'Send Nudge →';
+            if (typeof toast === 'function') toast('error', err.message || 'Follow-up SMS could not be sent.');
           }
         });
       });

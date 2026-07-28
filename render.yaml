@@ -3,7 +3,7 @@ services:
     name: starpush
     runtime: node
     plan: starter
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node server.js
     healthCheckPath: /health
 
@@ -47,6 +47,12 @@ services:
 
       # Anthropic AI
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL_HAIKU
+        value: claude-haiku-4-5-20251001
+      - key: ANTHROPIC_MODEL_SONNET
+        value: claude-sonnet-4-6
+      - key: PROMO_CODE
         sync: false
 
       # Stripe payments

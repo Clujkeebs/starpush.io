@@ -252,7 +252,7 @@ restoreSMSDraft();
         ? Math.floor((Date.now() - new Date(match.lastSmsAt)) / 86400000)
         : null;
       const when = daysAgo !== null ? `${daysAgo}d ago` : 'previously';
-      warnEl.innerHTML = `⚠️ <strong>${match.name}</strong> is already in your list (sent ${when}, status: <em>${match.status}</em>). Consider using <strong>Send Follow-up</strong> instead.`;
+      warnEl.innerHTML = `⚠️ <strong>${esc(match.name)}</strong> is already in your list (sent ${when}, status: <em>${esc(match.status)}</em>). Consider using <strong>Send Follow-up</strong> instead.`;
       warnEl.classList.remove('hidden');
     } else {
       warnEl.classList.add('hidden');
@@ -456,13 +456,20 @@ simBtn.addEventListener('click', async () => {
 })();
 
 /* ── Clear feed ──────────────────────────────────────────────────────────── */
-clearBtn.addEventListener('click', () => {
-  feedBody.querySelectorAll('.fi').forEach(el => el.remove());
-  knownIds.clear();
-  copyMap.clear();
-  shieldFeedMap.clear();
-  checkEmpty();
-  toast('info', 'Feed cleared.');
+clearBtn.addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/feed', { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Could not clear feed.');
+    feedBody.querySelectorAll('.fi').forEach(el => el.remove());
+    knownIds.clear();
+    copyMap.clear();
+    shieldFeedMap.clear();
+    checkEmpty();
+    toast('info', 'Feed cleared.');
+  } catch (err) {
+    toast('error', err.message || 'Could not clear feed.');
+  }
 });
 
 /* ── Feed polling (4-second interval) ───────────────────────────────────── */
