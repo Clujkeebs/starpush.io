@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # starpush.io Automated Deployment Script
-# Usage: ./deploy.sh [github-username] [anthropic-api-key]
+# Usage: ./deploy.sh [github-username]
 
 set -e
 
@@ -20,23 +20,15 @@ else
   GITHUB_USERNAME=$1
 fi
 
-if [ -z "$2" ]; then
-  echo "Enter your Anthropic API key (from https://console.anthropic.com/account/keys):"
-  read -s ANTHROPIC_API_KEY
-  echo ""
-else
-  ANTHROPIC_API_KEY=$2
-fi
-
 echo ""
 echo "Configuration:"
 echo "  GitHub Username: $GITHUB_USERNAME"
-echo "  Anthropic API Key: ***${ANTHROPIC_API_KEY: -4}"
+echo "  API keys: configure them securely in the Render dashboard"
 echo ""
 
 # Step 1: Prepare git repo
 echo "📦 Preparing Git repository..."
-git add .
+git add -u
 git commit -m "Deploy starpush.io $(date +%Y-%m-%d)" 2>/dev/null || echo "  (No changes to commit)"
 
 # Step 2: Create GitHub repo URL
@@ -71,7 +63,7 @@ echo "1. Go to https://dashboard.render.com/"
 echo "2. Click 'New +' → 'Web Service'"
 echo "3. Select your 'starpush.io' repository"
 echo "4. Set environment variables:"
-echo "   ANTHROPIC_API_KEY = $ANTHROPIC_API_KEY"
+echo "   ANTHROPIC_API_KEY = set securely in the Render dashboard"
 echo "   NODE_ENV = production"
 echo "5. Click 'Deploy'"
 echo ""

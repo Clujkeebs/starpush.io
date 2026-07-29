@@ -1085,6 +1085,7 @@
             `✓ SEO signals included: <strong>${escHtml(cityBase)}</strong> · <strong>${escHtml(tradeBase)}</strong>`;
           const exTag = document.getElementById('ti-example-tag');
           if (exTag) exTag.remove();
+          tiResult.classList.remove('hidden');
           tiResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } catch (err) {
           tiError.textContent = err.message || 'Something went wrong. Please try again.';

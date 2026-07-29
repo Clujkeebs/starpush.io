@@ -47,7 +47,8 @@ sqlite.exec(`
     status      TEXT DEFAULT 'pending',
     last_sms_at TEXT,
     followup_at TEXT,
-    sms_count   INTEGER DEFAULT 0
+    sms_count   INTEGER DEFAULT 0,
+    opted_out   INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS activity_feed (
@@ -55,7 +56,8 @@ sqlite.exec(`
     user_id   TEXT,
     type      TEXT NOT NULL,
     timestamp TEXT DEFAULT (datetime('now')),
-    data      TEXT
+    data      TEXT,
+    archived  INTEGER DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS coach_memory (
@@ -85,6 +87,10 @@ try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_template TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN promo_code TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN notes TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE customers ADD COLUMN send_at TEXT'); } catch {}
+try { sqlite.exec('ALTER TABLE customers ADD COLUMN opted_out INTEGER DEFAULT 0'); } catch {}
+try { sqlite.exec('ALTER TABLE activity_feed ADD COLUMN archived INTEGER DEFAULT 0'); } catch {}
+try { sqlite.exec('ALTER TABLE users ADD COLUMN reminder_7_sent_at TEXT'); } catch {}
+try { sqlite.exec('ALTER TABLE users ADD COLUMN reminder_1_sent_at TEXT'); } catch {}
 
 // One-time cleanup: lowercase + trim stored emails so lookups always match.
 // Row-by-row so a rare case-only duplicate (unique constraint) skips instead
@@ -130,6 +136,10 @@ const SNAKE_TO_CAMEL = {
   followup_at:            'followUpAt',
   sms_count:              'smsCount',
   send_at:                'sendAt',
+  opted_out:              'optedOut',
+  archived:               'archived',
+  reminder_7_sent_at:     'reminder7SentAt',
+  reminder_1_sent_at:     'reminder1SentAt',
   gbp_url:                'gbpUrl',
 };
 
@@ -178,12 +188,13 @@ const stmts = {
 
   // Customers
   getCustomersByUser: sqlite.prepare('SELECT * FROM customers WHERE user_id = ? ORDER BY added_at DESC'),
+  getAllCustomers:    sqlite.prepare('SELECT * FROM customers ORDER BY added_at DESC'),
   getCustomerById:    sqlite.prepare('SELECT * FROM customers WHERE id = ?'),
   insertCustomer:     sqlite.prepare(`
     INSERT INTO customers (id, user_id, name, phone, service, city,
-                           added_at, status, last_sms_at, followup_at, sms_count, send_at)
+                           added_at, status, last_sms_at, followup_at, sms_count, send_at, opted_out)
     VALUES (@id, @user_id, @name, @phone, @service, @city,
-            @added_at, @status, @last_sms_at, @followup_at, @sms_count, @send_at)
+            @added_at, @status, @last_sms_at, @followup_at, @sms_count, @send_at, @opted_out)
   `),
   deleteCustomer:       sqlite.prepare('DELETE FROM customers WHERE id = ?'),
   deleteCustomersByUser: sqlite.prepare('DELETE FROM customers WHERE user_id = ?'),
@@ -206,9 +217,11 @@ const stmts = {
     INSERT INTO activity_feed (user_id, type, timestamp, data)
     VALUES (@user_id, @type, @timestamp, @data)
   `),
-  getFeedByUser: sqlite.prepare('SELECT * FROM activity_feed WHERE user_id = ? ORDER BY timestamp DESC'),
-  getFeedAll:    sqlite.prepare('SELECT * FROM activity_feed ORDER BY timestamp DESC'),
-  clearFeed:     sqlite.prepare('DELETE FROM activity_feed'),
+  getFeedByUser: sqlite.prepare('SELECT * FROM activity_feed WHERE user_id = ? AND COALESCE(archived, 0) = 0 ORDER BY timestamp DESC'),
+  getFeedByUserAll: sqlite.prepare('SELECT * FROM activity_feed WHERE user_id = ? ORDER BY timestamp DESC'),
+  getFeedAll:    sqlite.prepare('SELECT * FROM activity_feed WHERE COALESCE(archived, 0) = 0 ORDER BY timestamp DESC'),
+  archiveFeed:   sqlite.prepare('UPDATE activity_feed SET archived = 1 WHERE user_id = ?'),
+  clearFeed:     sqlite.prepare('UPDATE activity_feed SET archived = 1'),
 
   // Coach memory
   getCoachMemory: sqlite.prepare('SELECT memory FROM coach_memory WHERE user_id = ?'),
@@ -266,6 +279,8 @@ db.createUser = function createUser(data) {
     reset_token:             data.resetToken    || null,
     reset_expires:           data.resetExpires  || null,
     promo_code:              data.promoCode     || null,
+    reminder_7_sent_at:      data.reminder7SentAt || null,
+    reminder_1_sent_at:      data.reminder1SentAt || null,
     created_at:              data.createdAt     || new Date().toISOString(),
   };
   stmts.insertUser.run(params);
@@ -273,12 +288,19 @@ db.createUser = function createUser(data) {
 };
 
 db.updateUser = function updateUser(id, fields) {
+  const allowed = new Set([
+    'name', 'businessName', 'trade', 'phone', 'googleReviewLink',
+    'smsTemplate', 'passwordHash', 'resetToken', 'resetExpires',
+    'plan', 'trialEndsAt', 'subscriptionStatus', 'stripeCustomerId',
+    'stripeSubscriptionId', 'promoCode', 'reminder7SentAt', 'reminder1SentAt',
+  ]);
   const sets = [];
   const values = {};
   for (const [key, val] of Object.entries(fields)) {
+    if (!allowed.has(key)) continue;
     const col = camelToSnake(key);
     sets.push(`${col} = @${col}`);
-    values[col] = val;
+    values[col] = key === 'optedOut' ? (val ? 1 : 0) : val;
   }
   if (sets.length === 0) return db.getUser(id);
   values.id = id;
@@ -312,6 +334,10 @@ db.getCustomers = function getCustomers(userId) {
   return stmts.getCustomersByUser.all(userId).map(rowToCamel);
 };
 
+db.getAllCustomers = function getAllCustomers() {
+  return stmts.getAllCustomers.all().map(rowToCamel);
+};
+
 db.getCustomer = function getCustomer(id) {
   return rowToCamel(stmts.getCustomerById.get(id));
 };
@@ -330,18 +356,24 @@ db.createCustomer = function createCustomer(data) {
     followup_at: data.followUpAt || null,
     sms_count:   data.smsCount   || 0,
     send_at:     data.sendAt     || null,
+    opted_out:   data.optedOut ? 1 : 0,
   };
   stmts.insertCustomer.run(params);
   return db.getCustomer(params.id);
 };
 
 db.updateCustomer = function updateCustomer(id, fields) {
+  const allowed = new Set([
+    'name', 'phone', 'service', 'city', 'status', 'lastSmsAt',
+    'followUpAt', 'smsCount', 'sendAt', 'notes', 'optedOut',
+  ]);
   const sets = [];
   const values = {};
   for (const [key, val] of Object.entries(fields)) {
+    if (!allowed.has(key)) continue;
     const col = camelToSnake(key);
     sets.push(`${col} = @${col}`);
-    values[col] = val;
+    values[col] = key === 'optedOut' ? (val ? 1 : 0) : val;
   }
   if (sets.length === 0) return db.getCustomer(id);
   values.id = id;
@@ -385,8 +417,10 @@ db.addFeedEntry = function addFeedEntry(entry) {
   return Object.assign({ id: Number(info.lastInsertRowid) }, entry, { timestamp: ts });
 };
 
-db.getFeed = function getFeed(userId) {
-  const rows = userId ? stmts.getFeedByUser.all(userId) : stmts.getFeedAll.all();
+db.getFeed = function getFeed(userId, includeArchived = false) {
+  const rows = userId
+    ? (includeArchived ? stmts.getFeedByUserAll.all(userId) : stmts.getFeedByUser.all(userId))
+    : stmts.getFeedAll.all();
   return rows.map(function (row) {
     const base = {
       id:        row.id,
@@ -404,6 +438,10 @@ db.getFeed = function getFeed(userId) {
 
 db.clearFeed = function clearFeed() {
   stmts.clearFeed.run();
+};
+
+db.archiveFeed = function archiveFeed(userId) {
+  stmts.archiveFeed.run(userId);
 };
 
 // ── Audit Leads ──────────────────────────────────────────────────────────────

@@ -98,7 +98,8 @@ git push heroku main
 | POST | `/api/send-request` | ✓ | Send review request SMS |
 | POST | `/api/webhook/review` | ✓ | Receive review webhook |
 | GET | `/api/feed` | ✓ | Activity feed |
-| GET | `/api/leads` | — | View all leads |
+| GET | `/api/leads` | `x-admin-key` | View lead summary (admin only) |
+| POST | `/api/webhook/twilio-inbound` | Twilio webhook | Process STOP/START replies |
 | GET | `/health` | — | Health check |
 
 ## 🔑 API Keys
@@ -106,7 +107,14 @@ git push heroku main
 **Anthropic**
 - Get free trial: https://console.anthropic.com
 - Keys limit: 5 requests/minute on free tier
-- Model: claude-sonnet-4-6 (GBP Optimizer), claude-haiku-4-5 (replies)
+
+Set `PROMO_CODE` in the server environment to enable the optional bounded
+promotional trial; leave it unset to disable promo codes. Configure
+`ANTHROPIC_MODEL_HAIKU` and `ANTHROPIC_MODEL_SONNET` to override the defaults.
+
+Configure Twilio's inbound messaging webhook to:
+`https://starpush.io/api/webhook/twilio-inbound`
+- Defaults: `claude-sonnet-4-6` (GBP Optimizer), `claude-haiku-4-5-20251001` (replies)
 
 **Twilio** (Optional)
 - Get trial: https://console.twilio.com
