@@ -376,8 +376,6 @@ smsForm.addEventListener('submit', async e => {
     });
     const data = await res.json();
 
-    if (data.entry) insertItem(data.entry);
-
     if (res.ok) {
       toast('ok', `✅ SMS sent to ${customerName}`);
       smsForm.reset();
