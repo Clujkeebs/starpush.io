@@ -84,6 +84,14 @@
             </div>
           </div>
 
+          <div class="sf-promo">
+            <button type="button" class="sf-promo-toggle" id="s-promo-toggle">Have a promo code?</button>
+            <div class="sf-promo-field hidden" id="s-promo-wrap">
+              <input class="sf-inp" type="text" id="s-promo" placeholder="Enter code"
+                autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" />
+            </div>
+          </div>
+
           <label class="sf-consent" for="s-consent">
             <input type="checkbox" id="s-consent" />
             <span>
@@ -175,6 +183,23 @@
       if (emailField) emailField.value = prefillEmail;
     }
 
+    // Promo code: hidden behind a link so it doesn't invite everyone to go
+    // hunting for one, but opens automatically if a code came in via the URL
+    // (e.g. a link you hand out directly: /signup?promo=dro).
+    const promoToggle = document.getElementById('s-promo-toggle');
+    const promoWrap   = document.getElementById('s-promo-wrap');
+    const promoInput  = document.getElementById('s-promo');
+    promoToggle?.addEventListener('click', () => {
+      promoWrap.classList.toggle('hidden');
+      if (!promoWrap.classList.contains('hidden')) promoInput.focus();
+    });
+    const prefillPromo = params.get('promo') || params.get('code');
+    if (prefillPromo && promoInput) {
+      promoInput.value = prefillPromo;
+      promoWrap.classList.remove('hidden');
+      promoToggle.textContent = 'Promo code applied';
+    }
+
     const form     = document.getElementById('signup-form');
     const btn      = document.getElementById('sf-btn');
     const btnTxt   = document.getElementById('sf-btn-txt');
@@ -230,6 +255,7 @@
             phone:     document.getElementById('s-phone').value.trim(),
             plan:      plan || 'trial',
             smsConsent: true,
+            promoCode: document.getElementById('s-promo')?.value.trim() || '',
           }),
         });
 

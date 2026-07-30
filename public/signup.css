@@ -145,6 +145,22 @@ a.signup-logo-by:hover { color: #fbbf24; }
   box-shadow: 0 0 0 3px rgba(220,38,38,.1);
 }
 
+/* ── Promo code ──────────────────────────────────────────────────────────── */
+.sf-promo { margin-bottom: 14px; }
+.sf-promo-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--navy, #1d4ed8);
+  text-decoration: underline;
+  cursor: pointer;
+  font-family: inherit;
+}
+.sf-promo-field { margin-top: 8px; }
+.sf-promo-field.hidden { display: none; }
+
 /* ── SMS consent attestation ─────────────────────────────────────────────── */
 .sf-consent {
   display: flex;

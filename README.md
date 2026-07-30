@@ -128,9 +128,22 @@ git push heroku main
 - Get free trial: https://console.anthropic.com
 - Keys limit: 5 requests/minute on free tier
 
-Set `PROMO_CODE` in the server environment to enable the optional bounded
-promotional trial; leave it unset to disable promo codes. Configure
-`ANTHROPIC_MODEL_HAIKU` and `ANTHROPIC_MODEL_SONNET` to override the defaults.
+**Promo code**
+
+The live code is **`dro`**. Set it in the server environment to activate it:
+
+```
+PROMO_CODE=dro
+```
+
+Entering `dro` on the signup form grants a 90-day complimentary trial (full
+access, no card). Leave `PROMO_CODE` unset and promo codes are disabled
+entirely. The code lives in the environment rather than in the source so you can
+rotate or disable it without a deploy. See `PROMO.md` for managing those
+accounts.
+
+Configure `ANTHROPIC_MODEL_HAIKU` and `ANTHROPIC_MODEL_SONNET` to override the
+default models.
 
 Configure Twilio's inbound messaging webhook to:
 `https://starpush.io/api/webhook/twilio-inbound`

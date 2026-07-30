@@ -109,7 +109,14 @@ analyzeBtn.addEventListener('click', async () => {
   } catch (err) {
     hideLoading();
     showForm();
-    showError(err.message);
+    // A render failure means the model returned a shape we didn't expect —
+    // real but rare. Don't show the raw JS error ("Cannot read properties of
+    // undefined") to a business owner; it reads like the site is broken.
+    const isRenderError = err instanceof TypeError;
+    if (isRenderError) console.error('[Optimize] render failed:', err);
+    showError(isRenderError
+      ? 'The AI returned an incomplete report. Please hit Analyze again — this usually works on the second try.'
+      : err.message);
   } finally {
     setBusy(false);
   }

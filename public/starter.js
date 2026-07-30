@@ -50,7 +50,13 @@ startBtn.addEventListener('click', async () => {
   } catch (err) {
     hideLoading();
     showForm();
-    showError(err.message);
+    // See optimize.js — a shape mismatch from the model shouldn't surface as a
+    // raw JS error to the business owner.
+    const isRenderError = err instanceof TypeError;
+    if (isRenderError) console.error('[Starter] render failed:', err);
+    showError(isRenderError
+      ? 'The AI returned an incomplete plan. Please hit the button again — this usually works on the second try.'
+      : err.message);
   } finally {
     setBusy(false);
   }

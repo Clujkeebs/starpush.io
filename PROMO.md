@@ -1,13 +1,18 @@
 # Promo code — owner-controlled complimentary trial
 
-Set the `PROMO_CODE` environment variable to enable a single promotional signup
-code. **Leave it unset and promo codes are disabled entirely** — the signup
-endpoint ignores any code supplied.
+The live code is **`dro`**. Activate it by setting the environment variable:
 
-> Don't write the live code into this file or anywhere else in the repo. It
-> lives in the environment so it can be rotated without a deploy, and so a
-> public repo doesn't hand out free accounts. The comparison is timing-safe
-> (`crypto.timingSafeEqual`) and case-insensitive.
+```
+PROMO_CODE=dro
+```
+
+**Leave `PROMO_CODE` unset and promo codes are disabled entirely** — the signup
+endpoint ignores any code supplied. The comparison is timing-safe
+(`crypto.timingSafeEqual`) and case-insensitive, so `DRO` and `Dro` also work.
+
+> Keeping the value in the environment rather than hardcoded means you can
+> rotate it, or switch it off, without a deploy. If this repo ever becomes
+> public, change the code — anyone who can read it gets a free account.
 
 ## What it does
 
