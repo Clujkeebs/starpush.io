@@ -128,7 +128,10 @@ function requireActiveAPI(req, res, next) {
 // Each plan advertises a monthly SMS cap on the pricing page — without
 // enforcing it here, a Starter customer paying a flat $49/mo could send
 // unlimited texts while the business absorbs the Twilio cost.
-const PLAN_SMS_LIMITS = { trial: 150, starter: 150, growth: 600, pro: Infinity };
+// 'pro' was Infinity, which on a flat $199/mo made Twilio cost unbounded for a
+// single account. A high explicit ceiling still reads as "unlimited" to a real
+// local business while capping the downside.
+const PLAN_SMS_LIMITS = { trial: 150, starter: 150, growth: 600, pro: 2500 };
 function smsLimitFor(user) {
   return PLAN_SMS_LIMITS[user.plan] ?? 150;
 }
@@ -178,7 +181,17 @@ async function sendTwilioSMS(toNumber, messageBody) {
     headers: { Authorization: `Basic ${credentials}`, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ To: toNumber, From: fromNumber, Body: messageBody }).toString(),
   });
-  const data = await response.json();
+  // Twilio normally returns JSON, but an outage or an intercepting proxy can
+  // return HTML — parsing that blindly surfaced "Unexpected token 'H'" to the
+  // business owner instead of something they could act on.
+  const rawText = await response.text();
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    console.error(`[Twilio] non-JSON response (HTTP ${response.status}): ${rawText.slice(0, 200)}`);
+    throw new Error('Text messaging is temporarily unavailable. Please try again in a few minutes.');
+  }
   if (!response.ok) {
     const err = new Error(friendlyTwilioError(data, response.status));
     err.code = data && data.code;
@@ -187,10 +200,29 @@ async function sendTwilioSMS(toNumber, messageBody) {
   return data;
 }
 
+// Every *customer-facing* send goes through here: it enforces quota, opt-out,
+// and the carrier-required opt-out notice. Owner-facing operational replies
+// (e.g. confirming an inbound command) use sendTwilioSMS directly — they are
+// transactional, don't consume the customer quota, and don't need the notice.
 async function sendSMSWithQuota(user, toNumber, messageBody) {
   const normPhone = normalizePhone(toNumber);
   if (!normPhone) throw new Error('That phone number is invalid.');
+  const body = withOptOutNotice(messageBody);
+  // Unverified accounts cannot text anyone. Enforced here rather than in route
+  // middleware so the scheduled-send and auto-follow-up workers are covered too.
+  if (!user.emailVerifiedAt) {
+    throw new Error('Confirm your email address before sending texts — check your inbox for the link, or resend it from Account Settings.');
+  }
+  if (!user.smsConsentAt) {
+    throw new Error('Please confirm in Account Settings that your customers agreed to be contacted before sending texts.');
+  }
   const digits = normPhone.replace(/\D/g, '');
+  // Platform-wide suppression first: we all send from one Twilio number, so a
+  // STOP from any tenant's customer blocks that number for everyone. Checking
+  // it here turns an opaque Twilio 21610 into an explainable refusal.
+  if (db.isPhoneSuppressed(normPhone)) {
+    throw new Error('This number has replied STOP to a review request and can no longer be texted.');
+  }
   const optedOut = db.getCustomers(user.id).some(c =>
     c.optedOut && (c.phone || '').replace(/\D/g, '') === digits);
   if (optedOut) throw new Error('This customer has opted out of SMS.');
@@ -198,9 +230,12 @@ async function sendSMSWithQuota(user, toNumber, messageBody) {
     throw new Error(`Monthly SMS limit reached (${smsLimitFor(user)}/mo) — upgrade to send more.`);
   }
   try {
-    return await sendTwilioSMS(normPhone, messageBody);
+    return await sendTwilioSMS(normPhone, body);
   } catch (err) {
     if (Number(err.code) === 21610) {
+      // Twilio knows this number opted out even if our webhook never saw the
+      // STOP (e.g. it arrived before signature validation was in place).
+      db.suppressPhone(normPhone, 'twilio_21610');
       for (const customer of db.getCustomers(user.id)) {
         if ((customer.phone || '').replace(/\D/g, '') === digits) {
           db.updateCustomer(customer.id, { optedOut: true });
@@ -235,23 +270,145 @@ function friendlyTwilioError(data, httpStatus) {
   return (data && data.message) || `Twilio error HTTP ${httpStatus}`;
 }
 
+// Verify the request really came from Twilio. Without this, anyone who knows the
+// URL can forge a START for a number that opted out, un-suppressing it and
+// causing us to text someone who said stop — a TCPA violation created by a
+// stranger with curl. Twilio signs the full URL + sorted POST params with the
+// account auth token (X-Twilio-Signature, base64 HMAC-SHA1).
+function twilioSignatureValid(req) {
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const signature = req.get('X-Twilio-Signature');
+  if (!authToken || !signature) return false;
+  const url = `${getAppUrl(req)}${req.originalUrl}`;
+  const data = Object.keys(req.body || {}).sort()
+    .reduce((acc, key) => acc + key + req.body[key], url);
+  const expected = crypto.createHmac('sha1', authToken).update(Buffer.from(data, 'utf-8')).digest('base64');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // Twilio inbound webhook: configure this URL as the messaging webhook for the
-// sending number. STOP-style replies suppress future sends for that account.
+// sending number. STOP-style replies suppress the number platform-wide, because
+// all tenants send from the same Twilio number and Twilio enforces opt-out at
+// that level.
 app.post('/api/webhook/twilio-inbound', (req, res) => {
+  const done = () => res.type('text/xml').send('<Response></Response>');
+
+  if (!twilioSignatureValid(req)) {
+    console.warn('[Twilio Inbound] rejected: bad or missing signature');
+    return res.status(403).type('text/xml').send('<Response></Response>');
+  }
+
   const body = String(req.body.Body || '').trim().toUpperCase();
   const from = normalizePhone(req.body.From);
-  if (!from) return res.type('text/xml').send('<Response></Response>');
-  const optedOut = ['STOP', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'].includes(body);
-  const optIn = ['START', 'UNSTOP', 'YES'].includes(body);
-  if (optedOut || optIn) {
-    const digits = from.replace(/\D/g, '');
-    for (const customer of db.getAllCustomers().filter(c =>
-      (c.phone || '').replace(/\D/g, '') === digits)) {
-      db.updateCustomer(customer.id, { optedOut });
-    }
+  if (!from) return done();
+
+  const optedOut = ['STOP', 'STOPALL', 'UNSUBSCRIBE', 'CANCEL', 'END', 'QUIT'].includes(body);
+  const optIn    = ['START', 'UNSTOP', 'YES'].includes(body);
+  if (!optedOut && !optIn) {
+    // Not a keyword — try to read it as an owner command ("Jane 5551234567 furnace").
+    return handleInboundCommand(req, res, from, String(req.body.Body || '').trim());
   }
-  res.type('text/xml').send('<Response></Response>');
+
+  const digits = from.replace(/\D/g, '');
+  if (optedOut) db.suppressPhone(from, 'stop_reply');
+  else          db.unsuppressPhone(from);
+
+  for (const customer of db.getAllCustomers().filter(c =>
+    (c.phone || '').replace(/\D/g, '') === digits)) {
+    db.updateCustomer(customer.id, { optedOut });
+  }
+  console.log(`[Twilio Inbound] ${optedOut ? 'suppressed' : 'un-suppressed'} ${from}`);
+  return done();
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// INBOUND COMMAND — text a review request without opening the dashboard
+// ════════════════════════════════════════════════════════════════════════════
+// The dashboard requires an owner to stop, log in, and type a customer in —
+// more effort than texting the customer themselves, which is the main reason a
+// tool like this gets abandoned. This lets them text us instead, from the truck:
+//
+//     Jane 5551234567 furnace repair
+//
+// Parsing is deliberately loose: find the phone number, everything before it is
+// the name, everything after is the service. Commas and punctuation are fine.
+const INBOUND_HELP =
+  'Starpush: text a review request like this —\n' +
+  'Jane 5551234567 furnace repair\n' +
+  '(name, their number, what you did)';
+
+function parseInboundCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  // First run of 10-11 digits, allowing (), -, ., and spaces inside it.
+  const m = raw.match(/(\+?1[\s.\-()]*)?(\(?\d{3}\)?[\s.\-]*\d{3}[\s.\-]*\d{4})/);
+  if (!m) return null;
+  const phone = normalizePhone(m[0]);
+  if (!phone) return null;
+  const name    = raw.slice(0, m.index).replace(/[,;:]+\s*$/, '').trim();
+  const service = raw.slice(m.index + m[0].length).replace(/^[\s,;:.-]+/, '').trim();
+  if (!name) return null;
+  return { name, phone, service: service || 'the work we did' };
+}
+
+// Operational reply to the owner: not a customer message, so it bypasses the
+// customer quota and carries no opt-out notice.
+async function replyToOwner(toNumber, text) {
+  try { await sendTwilioSMS(toNumber, text); }
+  catch (err) { console.error('[Inbound] could not reply to owner:', err.message); }
+}
+
+async function handleInboundCommand(req, res, from, rawBody) {
+  const done = () => res.type('text/xml').send('<Response></Response>');
+  const user = db.getUserByPhone(from);
+
+  // Unknown sender — stay silent rather than texting strangers who replied to us.
+  if (!user) {
+    console.log(`[Inbound] no account matches ${from} — ignoring`);
+    return done();
+  }
+
+  if (/^(help|\?|info)$/i.test(rawBody.trim())) {
+    await replyToOwner(from, INBOUND_HELP);
+    return done();
+  }
+
+  const parsed = parseInboundCommand(rawBody);
+  if (!parsed) {
+    await replyToOwner(from, `Starpush: couldn't read that. ${INBOUND_HELP}`);
+    return done();
+  }
+
+  if (!hasActiveAccess(user)) {
+    await replyToOwner(from, 'Starpush: your trial has ended — upgrade at starpush.io/upgrade to keep sending.');
+    return done();
+  }
+
+  const blocked = recentContactBlock(user.id, parsed.phone);
+  if (blocked) {
+    await replyToOwner(from, `Starpush: skipped ${parsed.name} — ${blocked}.`);
+    return done();
+  }
+
+  const result = await sendReviewRequest({
+    user,
+    customerName: parsed.name,
+    phone: parsed.phone,
+    service: parsed.service,
+    city: '',
+  });
+
+  if (result.ok) {
+    console.log(`[Inbound] ${user.email} texted a request to ${parsed.name}`);
+    const left = smsQuotaRemaining(user);
+    await replyToOwner(from, `Starpush: review request sent to ${parsed.name} ✅${left === Infinity ? '' : ` (${left} left this month)`}`);
+  } else {
+    await replyToOwner(from, `Starpush: couldn't send to ${parsed.name} — ${result.error}`);
+  }
+  return done();
+}
 
 // ── Anthropic AI reply (SEO-Turbo) ───────────────────────────────────────────
 async function generateAIReply(reviewText, service, city, rating) {
@@ -304,6 +461,45 @@ function authRateLimit(req, res, next) {
   }
   next();
 }
+// authRateLimit keys on ip+email, which a scripted signup defeats by varying the
+// email. Signup needs a cap on the IP alone: every new account carries a free
+// SMS allowance on the shared Twilio number, so uncapped signup is an open relay.
+// Two separate counters: created accounts (the thing that costs money) and raw
+// attempts (cheap for us, but worth capping against a flood). Counting attempts
+// as creations would lock out a real person who mistypes the form a few times.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const signupCreatedMap  = new Map();
+const signupAttemptMap  = new Map();
+const SIGNUP_MAX_CREATED_PER_DAY  = 5;
+const SIGNUP_MAX_ATTEMPTS_PER_DAY = 40;
+
+function recentHits(map, key) {
+  const now = Date.now();
+  return (map.get(key) || []).filter(t => now - t < DAY_MS);
+}
+function recordHit(map, key) {
+  const hits = recentHits(map, key);
+  hits.push(Date.now());
+  map.set(key, hits);
+  if (map.size > 5000) {
+    const now = Date.now();
+    for (const [k, values] of map) {
+      if (!values.some(t => now - t < DAY_MS)) map.delete(k);
+    }
+  }
+}
+
+function signupRateLimit(req, res, next) {
+  if (recentHits(signupCreatedMap, req.ip).length >= SIGNUP_MAX_CREATED_PER_DAY) {
+    return res.status(429).json({ error: 'Too many accounts created from this network today. Please try again tomorrow, or email clujkeebs@aol.com.' });
+  }
+  if (recentHits(signupAttemptMap, req.ip).length >= SIGNUP_MAX_ATTEMPTS_PER_DAY) {
+    return res.status(429).json({ error: 'Too many signup attempts. Please try again later.' });
+  }
+  recordHit(signupAttemptMap, req.ip);
+  next();
+}
+
 function maxString(value, max, field) {
   if (value != null && String(value).length > max) {
     const err = new Error(`${field} is too long.`);
@@ -514,11 +710,15 @@ Generate 6-8 steps covering at minimum: create the profile, verify it, set the p
 // ════════════════════════════════════════════════════════════════════════════
 
 // POST /api/auth/signup
-app.post('/api/auth/signup', async (req, res) => {
+app.post('/api/auth/signup', signupRateLimit, async (req, res) => {
   try {
-    const { name, email, password, businessName, trade, phone, promoCode } = req.body;
+    const { name, email, password, businessName, trade, phone, promoCode, smsConsent } = req.body;
     if (!name || !email || !password) return res.status(400).json({ error: 'Name, email, and password are required.' });
     if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+    // TCPA: we will not text anyone on an account that hasn't attested consent.
+    if (smsConsent !== true) {
+      return res.status(400).json({ error: 'Please confirm you only text customers who have done business with you and agreed to be contacted.' });
+    }
     for (const [value, max, field] of [[name, 120, 'Name'], [email, 254, 'Email'], [businessName, 160, 'Business name'], [trade, 80, 'Trade'], [phone, 40, 'Phone']]) {
       maxString(value, max, field);
     }
@@ -534,6 +734,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
     const standardTrialEnd = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     const promoTrialEnd = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const verifyToken = crypto.randomBytes(32).toString('hex');
     const user = db.createUser({
       id: crypto.randomUUID(),
       name: name.trim(),
@@ -546,10 +747,15 @@ app.post('/api/auth/signup', async (req, res) => {
       trialEndsAt: hasPromo ? promoTrialEnd : standardTrialEnd,
       subscriptionStatus: 'trialing',
       promoCode: hasPromo ? 'promo' : null,
+      smsConsentAt: new Date().toISOString(),
+      verifyToken,
     });
 
+    recordHit(signupCreatedMap, req.ip);
     console.log(`[Signup] ${user.name} | ${user.email} | ${user.businessName}${hasPromo ? ' | promo trial' : ''}`);
     mailer.sendWelcome(user.email, user.name).catch(() => {});
+    mailer.sendEmailVerification(user.email, user.name,
+      `${getAppUrl(req)}/api/auth/verify-email?token=${verifyToken}`).catch(() => {});
 
     const token = signToken(user);
     res.cookie('rp_token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 30 * 24 * 60 * 60 * 1000, sameSite: 'lax' });
@@ -616,14 +822,40 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true, redirect: '/' });
 });
 
+// GET /api/auth/verify-email — link target from the verification email.
+// Verification unlocks SMS sending (see requireVerifiedEmail).
+app.get('/api/auth/verify-email', (req, res) => {
+  const token = String(req.query.token || '');
+  const user = token && db.getUserByVerifyToken(token);
+  if (!user) return res.redirect('/dashboard?verify=invalid');
+  if (!user.emailVerifiedAt) {
+    db.updateUser(user.id, { emailVerifiedAt: new Date().toISOString(), verifyToken: null });
+    console.log(`[Verify] ${user.email} confirmed`);
+  }
+  return res.redirect('/dashboard?verify=ok');
+});
+
+// POST /api/auth/resend-verification
+app.post('/api/auth/resend-verification', requireAuth, authRateLimit, (req, res) => {
+  if (req.user.emailVerifiedAt) return res.json({ success: true, alreadyVerified: true });
+  const verifyToken = crypto.randomBytes(32).toString('hex');
+  db.updateUser(req.user.id, { verifyToken });
+  mailer.sendEmailVerification(req.user.email, req.user.name,
+    `${getAppUrl(req)}/api/auth/verify-email?token=${verifyToken}`).catch(() => {});
+  res.json({ success: true });
+});
+
 // GET /api/auth/me
 app.get('/api/auth/me', (req, res) => {
   const user = getUser(req);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
-  const { passwordHash, resetToken, resetExpires, ...safe } = user;
+  const { passwordHash, resetToken, resetExpires, verifyToken, ...safe } = user;
+  safe.emailVerified = !!user.emailVerifiedAt;
   // Lets the account page show real SMS connection status instead of a
   // hardcoded "Connected" that lies when Twilio isn't configured yet.
   safe.smsConfigured = !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_PHONE_NUMBER);
+  // The number owners text to send a request without opening the dashboard.
+  safe.smsFromNumber = process.env.TWILIO_PHONE_NUMBER || null;
   res.json(safe);
 });
 
@@ -637,6 +869,11 @@ app.patch('/api/auth/me', requireAuth, (req, res) => {
   if (typeof phone === 'string')             fields.phone = phone.trim();
   if (typeof googleReviewLink === 'string')  fields.googleReviewLink = googleReviewLink.trim();
   if (typeof smsTemplate === 'string')       fields.smsTemplate = smsTemplate.trim();
+  // Catch an unusable link here rather than discovering it after texting a
+  // customer. Clearing the field (empty string) stays allowed.
+  if (fields.googleReviewLink && !isUsableReviewLink(fields.googleReviewLink)) {
+    return res.status(400).json({ error: 'That doesn\'t look like a working review link. Paste the full URL from Google — it usually starts with https://g.page/r/ or https://maps.app.goo.gl/.' });
+  }
   for (const [value, max, field] of [[name, 120, 'Name'], [businessName, 160, 'Business name'], [trade, 80, 'Trade'], [phone, 40, 'Phone'], [googleReviewLink, 500, 'Review link'], [smsTemplate, 1000, 'SMS template']]) {
     if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
   }
@@ -792,6 +1029,17 @@ app.get('/api/stripe/portal', requireAuth, async (req, res) => {
 // ── Template builder (shared by send-request and send-bulk) ───────────────
 // Texts arrive from an unrecognized number — leading with the business name is
 // the difference between "oh, my plumber" and "spam, delete".
+// Carriers (CTIA guidelines) and Twilio's A2P 10DLC campaign rules require
+// every promotional/notification message to carry opt-out instructions. Without
+// this line the traffic is filterable and the account is at risk — so it is
+// appended here, in the one place every outbound body is built, rather than
+// trusted to each template.
+const OPT_OUT_NOTICE = 'Reply STOP to opt out.';
+
+function withOptOutNotice(msg) {
+  return /\bstop\b/i.test(msg) ? msg : `${msg} ${OPT_OUT_NOTICE}`;
+}
+
 function buildSMSFromTemplate(tpl, name, service, link, customTemplate, businessName) {
   const biz = (businessName || '').trim();
   if (tpl === 'custom' && customTemplate) {
@@ -803,35 +1051,69 @@ function buildSMSFromTemplate(tpl, name, service, link, customTemplate, business
       .replace(/\{link\}/gi, link);
     // A review request without the review link is a wasted text — if the
     // custom template forgot the {link} placeholder, tack the link on.
-    return msg.includes(link) ? msg : `${msg} ${link}`;
+    return withOptOutNotice(msg.includes(link) ? msg : `${msg} ${link}`);
   }
   if (tpl === 'brief')
-    return `Hi ${name}! Quick favour — could you leave ${biz || 'us'} a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`;
+    return withOptOutNotice(`Hi ${name}! Could you leave ${biz || 'us'} a Google review for your ${service}? ${link} Takes 30 secs 🙏`);
   if (tpl === 'personal')
-    return `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help ${biz ? `us at ${biz}` : 'us'} enormously: ${link} — thanks so much!`;
-  return `Hi ${name}, thanks for choosing ${biz || 'us'} for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`;
+    return withOptOutNotice(`Hey ${name}! Pleasure working on your ${service}. If you're happy with it, an honest Google review would help ${biz ? `us at ${biz}` : 'us'} a lot: ${link}`);
+  return withOptOutNotice(`Hi ${name}, thanks for choosing ${biz || 'us'} for your ${service}! Could you leave us a quick Google review? ${link}`);
 }
 
-app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, async (req, res) => {
-  const { customerName, phone, service, city, reviewLink, template } = req.body;
-  if (!customerName || !phone || !service) return res.status(400).json({ error: 'customerName, phone, and service are required.' });
-  for (const [value, max, field] of [[customerName, 120, 'Customer name'], [phone, 40, 'Phone'], [service, 120, 'Service'], [city, 120, 'City'], [reviewLink, 500, 'Review link']]) {
-    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
+// Every send path used to fall back to the literal string
+// 'https://g.page/r/your-review-link' when the owner hadn't saved a link yet —
+// texting a real customer a dead placeholder. Resolution now returns null and
+// callers refuse to send, which fails loudly instead of silently wasting a text.
+const PLACEHOLDER_LINK_RE = /your-review-link|your-link|example\.com|YOUR_/i;
+
+function isUsableReviewLink(link) {
+  const s = String(link || '').trim();
+  if (!s || PLACEHOLDER_LINK_RE.test(s)) return false;
+  try {
+    const u = new URL(s);
+    return u.protocol === 'https:' || u.protocol === 'http:';
+  } catch { return false; }
+}
+
+function resolveReviewLink(user, override) {
+  for (const candidate of [override, user && user.googleReviewLink, process.env.DEFAULT_REVIEW_LINK]) {
+    const s = String(candidate || '').trim();
+    if (isUsableReviewLink(s)) return s;
   }
+  return null;
+}
 
+const NO_LINK_ERROR = 'Add your Google review link in Account Settings first — without it the text has nowhere to send your customer.';
+
+// The single reminder body, shared by the manual follow-up endpoint, the coach's
+// bulk action, and the automatic follow-up worker — they had drifted into three
+// copies of the same string.
+function buildFollowUpSMS(name, service, businessName, link) {
+  const biz = (businessName || '').trim();
+  return withOptOutNotice(`Hi ${name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${service} we did. Takes 30 seconds: ${link}`);
+}
+
+// Send one review request, record the customer, and log the feed entry.
+// Shared by POST /api/send-request and the inbound-SMS trigger so both paths
+// behave identically — same quota, same opt-out checks, same records.
+async function sendReviewRequest({ user, customerName, phone, service, city, reviewLink, template }) {
   const normPhone = normalizePhone(phone);
-  if (!normPhone) return res.status(400).json({ error: 'That phone number doesn\'t look right — please enter a 10-digit US number, e.g. (555) 123-4567.' });
+  if (!normPhone) return { ok: false, error: 'That phone number doesn\'t look right — please enter a 10-digit US number, e.g. (555) 123-4567.' };
 
-  const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const smsBody = buildSMSFromTemplate(template, customerName.trim(), service.trim(), link, req.user.smsTemplate, req.user.businessName);
+  const link = resolveReviewLink(user, reviewLink);
+  if (!link) return { ok: false, error: NO_LINK_ERROR };
+
+  const name = String(customerName).trim();
+  const svc  = String(service).trim();
+  const smsBody = buildSMSFromTemplate(template, name, svc, link, user.smsTemplate, user.businessName);
 
   const custId = crypto.randomUUID();
-  const entry = { type: 'sms_sent', customerName: customerName.trim(), phone: normPhone, service: service.trim(), city: (city || '').trim(), message: smsBody, status: 'pending', twilioSid: null, error: null, customerId: custId };
+  const entry = { type: 'sms_sent', customerName: name, phone: normPhone, service: svc, city: (city || '').trim(), message: smsBody, status: 'pending', twilioSid: null, error: null, customerId: custId };
 
   let twilioOk = false;
   let twilioCode = null;
   try {
-    const result    = await sendSMSWithQuota(req.user, normPhone, smsBody);
+    const result    = await sendSMSWithQuota(user, normPhone, smsBody);
     entry.status    = 'delivered';
     entry.twilioSid = result.sid;
     twilioOk = true;
@@ -842,30 +1124,42 @@ app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, as
     console.error('[Twilio]', err.message);
   }
 
-  db.addFeedEntry({ userId: req.user.id, type: entry.type, ...entry });
+  db.addFeedEntry({ userId: user.id, type: entry.type, ...entry });
 
-  // Persist as a customer record for this user
   try {
     db.createCustomer({
       id: custId,
-      userId: req.user.id,
-      name: customerName.trim(),
+      userId: user.id,
+      name,
       phone: normPhone,
-      service: service.trim(),
+      service: svc,
       city: (city || '').trim(),
       status: twilioOk ? 'sent' : 'pending',
       lastSmsAt: twilioOk ? new Date().toISOString() : null,
       smsCount: twilioOk ? 1 : 0,
     });
     if (!twilioOk && twilioCode === 21610) {
-      markPhoneOptedOut(req.user.id, normPhone);
+      markPhoneOptedOut(user.id, normPhone);
     }
   } catch (err) {
     console.error('[Customers] failed to persist customer:', err.message);
   }
 
-  if (twilioOk) return res.json({ success: true, entry });
-  return res.status(502).json({ error: entry.error, entry });
+  return twilioOk ? { ok: true, entry } : { ok: false, error: entry.error, entry };
+}
+
+app.post('/api/send-request', requireAuth, requireActiveAPI, requireSmsQuota, async (req, res) => {
+  const { customerName, phone, service, city, reviewLink, template } = req.body;
+  if (!customerName || !phone || !service) return res.status(400).json({ error: 'customerName, phone, and service are required.' });
+  for (const [value, max, field] of [[customerName, 120, 'Customer name'], [phone, 40, 'Phone'], [service, 120, 'Service'], [city, 120, 'City'], [reviewLink, 500, 'Review link']]) {
+    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
+  }
+
+  const result = await sendReviewRequest({ user: req.user, customerName, phone, service, city, reviewLink, template });
+  if (result.ok) return res.json({ success: true, entry: result.entry });
+  // A bad phone/link is the caller's mistake (400); a Twilio failure is upstream (502).
+  const status = result.entry ? 502 : 400;
+  return res.status(status).json({ error: result.error, entry: result.entry });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -882,7 +1176,8 @@ app.post('/api/send-bulk', requireAuth, requireActiveAPI, async (req, res) => {
     return res.status(400).json({ error: 'One or more fields are too long.' });
   }
 
-  const link = (reviewLink || '').trim() || req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const link = resolveReviewLink(req.user, reviewLink);
+  if (!link) return res.status(400).json({ error: NO_LINK_ERROR });
   const results = [];
   const batchPhones = new Set();
 
@@ -1017,7 +1312,12 @@ setInterval(async () => {
           console.warn(`[Scheduled Send] ${c.name}: invalid phone — moved to Not sent`);
           continue;
         }
-        const link = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+        const link = resolveReviewLink(user);
+        if (!link) {
+          db.updateCustomer(c.id, { status: 'pending', sendAt: null });
+          console.warn(`[Scheduled Send] ${c.name}: ${user.email} has no review link — moved to Not sent`);
+          continue;
+        }
         const body = buildSMSFromTemplate(user.smsTemplate ? 'custom' : 'standard', c.name, c.service, link, user.smsTemplate, user.businessName);
         const result = await sendSMSWithQuota(user, normPhone, body);
         db.updateCustomer(c.id, { status: 'sent', lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, sendAt: null });
@@ -1063,19 +1363,25 @@ app.post('/api/customers', requireAuth, requireActiveAPI, async (req, res) => {
 
   // Attempt initial SMS — gracefully no-op if Twilio isn't configured or the
   // plan's monthly SMS quota is used up (customer record is still saved).
-  const link    = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const smsBody = buildSMSFromTemplate('standard', custData.name, custData.service, link, null, req.user.businessName);
+  const link    = resolveReviewLink(req.user);
+  const smsBody = link ? buildSMSFromTemplate('standard', custData.name, custData.service, link, null, req.user.businessName) : null;
   let twilioResult = null;
   let twilioError = null;
-  try {
-    twilioResult = await sendSMSWithQuota(req.user, custData.phone, smsBody);
-    custData.status    = 'sent';
-    custData.lastSmsAt = new Date().toISOString();
-    custData.smsCount  = 1;
-  } catch (err) {
-    twilioError = err.message;
-    if (err.code === 21610) custData.optedOut = true;
-    console.warn('[Customers] initial SMS skipped:', err.message);
+  if (!link) {
+    // Save the customer, but don't burn a text on a link that doesn't exist.
+    twilioError = NO_LINK_ERROR;
+    console.warn(`[Customers] initial SMS skipped: ${req.user.email} has no review link`);
+  } else {
+    try {
+      twilioResult = await sendSMSWithQuota(req.user, custData.phone, smsBody);
+      custData.status    = 'sent';
+      custData.lastSmsAt = new Date().toISOString();
+      custData.smsCount  = 1;
+    } catch (err) {
+      twilioError = err.message;
+      if (err.code === 21610) custData.optedOut = true;
+      console.warn('[Customers] initial SMS skipped:', err.message);
+    }
   }
 
   const customer = db.createCustomer(custData);
@@ -1129,9 +1435,9 @@ app.post('/api/customers/:id/send-followup', requireAuth, requireActiveAPI, asyn
   if (!customer || customer.userId !== req.user.id) return res.status(404).json({ error: 'Customer not found.' });
   const normPhone = normalizePhone(customer.phone);
   if (!normPhone) return res.status(400).json({ error: 'This customer\'s phone number is invalid — edit it and try again.' });
-  const link = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
-  const biz  = (req.user.businessName || '').trim();
-  const body = `Hi ${customer.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${customer.service} we did. Takes 30 seconds: ${link}. Thanks!`;
+  const link = resolveReviewLink(req.user);
+  if (!link) return res.status(400).json({ error: NO_LINK_ERROR });
+  const body = buildFollowUpSMS(customer.name, customer.service, req.user.businessName, link);
   try {
     const result = await sendSMSWithQuota(req.user, normPhone, body);
     customer = db.updateCustomer(customer.id, {
@@ -1230,6 +1536,96 @@ app.get('/api/stats', requireAuth, (req, res) => {
   res.json({ smsSent, reviews, avgRating, replies, reviewsThisWeek, reviewsLastWeek, smsThisWeek, smsLastWeek, conversionRate, streak, smsThisMonth, smsLimit });
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// REVIEW TREND — the thing that makes month 2 worth paying for
+// ════════════════════════════════════════════════════════════════════════════
+// Everything else in Starpush is one-and-done: generate a description, get an
+// audit, and there's no reason to come back. A trend line answers the only
+// question the owner actually has — "is this working?" — and it can only answer
+// it if they keep using the product.
+
+// GET /api/trend — owner-reported Google totals + in-app activity by month.
+app.get('/api/trend', requireAuth, (req, res) => {
+  const snapshots = db.getReviewSnapshots(req.user.id);
+
+  // In-app activity, bucketed by calendar month (last 6 months incl. current).
+  const feed = db.getFeed(req.user.id, true);
+  const months = [];
+  const cursor = new Date();
+  cursor.setDate(1);
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(cursor);
+    d.setMonth(cursor.getMonth() - i);
+    months.push(d.toISOString().slice(0, 7)); // YYYY-MM
+  }
+  const monthOf = ts => String(ts).slice(0, 7);
+  const activity = months.map(m => {
+    const inMonth = feed.filter(i => monthOf(i.timestamp) === m);
+    const requests = inMonth.filter(i => i.type === 'sms_sent' && (i.status === 'delivered' || i.status === 'sent')).length;
+    const logged   = inMonth.filter(i => i.type === 'review_received');
+    const rated    = logged.filter(i => Number(i.rating) > 0);
+    return {
+      month: m,
+      requests,
+      reviewsLogged: logged.length,
+      avgRating: rated.length
+        ? Number((rated.reduce((s, i) => s + Number(i.rating), 0) / rated.length).toFixed(2))
+        : null,
+    };
+  });
+
+  // Movement between the owner's first and latest reported totals.
+  let progress = null;
+  if (snapshots.length >= 2) {
+    const first = snapshots[0];
+    const last  = snapshots[snapshots.length - 1];
+    const days  = Math.max(1, Math.round(
+      (new Date(last.takenOn) - new Date(first.takenOn)) / 86400000));
+    progress = {
+      from: first.takenOn,
+      to: last.takenOn,
+      days,
+      reviewsGained: last.reviewCount - first.reviewCount,
+      ratingChange: (last.avgRating != null && first.avgRating != null)
+        ? Number((last.avgRating - first.avgRating).toFixed(2))
+        : null,
+      perMonth: Number((((last.reviewCount - first.reviewCount) / days) * 30).toFixed(1)),
+    };
+  }
+
+  res.json({ snapshots, activity, progress });
+});
+
+// POST /api/trend/snapshot — owner logs today's Google review count and rating.
+app.post('/api/trend/snapshot', requireAuth, (req, res) => {
+  const count  = Number(req.body.reviewCount);
+  const rating = req.body.avgRating === '' || req.body.avgRating == null ? null : Number(req.body.avgRating);
+  if (!Number.isInteger(count) || count < 0 || count > 1000000) {
+    return res.status(400).json({ error: 'Enter your total Google review count as a whole number.' });
+  }
+  if (rating != null && (!Number.isFinite(rating) || rating < 1 || rating > 5)) {
+    return res.status(400).json({ error: 'Star rating should be between 1.0 and 5.0.' });
+  }
+  // Guard against a typo silently wrecking the chart: Google totals only grow,
+  // so reject anything below the highest already recorded. Compare against the
+  // max of all *earlier* days — not just the most recent row, because today's
+  // entry is the one being corrected and an existing today row must not
+  // disable the check on the days before it.
+  const today = new Date().toISOString().slice(0, 10);
+  const earlier = db.getReviewSnapshots(req.user.id).filter(s => s.takenOn !== today);
+  if (earlier.length) {
+    const peak = earlier.reduce((a, b) => (b.reviewCount > a.reviewCount ? b : a));
+    if (count < peak.reviewCount) {
+      return res.status(400).json({
+        error: `You logged ${peak.reviewCount} reviews on ${peak.takenOn}. Google totals don't go down — double-check the number.`,
+      });
+    }
+  }
+  db.upsertReviewSnapshot({ userId: req.user.id, reviewCount: count, avgRating: rating });
+  console.log(`[Trend] ${req.user.email} logged ${count} reviews${rating ? ` @ ${rating}★` : ''}`);
+  res.json({ success: true, snapshots: db.getReviewSnapshots(req.user.id) });
+});
+
 // POST /api/webhook/review
 app.post('/api/webhook/review', requireAuth, requireActiveAPI, async (req, res) => {
   const { reviewText, reviewerName, service, city, rating } = req.body;
@@ -1318,10 +1714,12 @@ app.post('/api/insights', requireAuth, requireActiveAPI, async (req, res) => {
 app.post('/api/coach/execute', requireAuth, requireActiveAPI, async (req, res) => {
   const { action } = req.body;
   const CAP  = Math.min(25, smsQuotaRemaining(req.user)); // safety cap per click — no runaway blasts, and never exceed the plan's quota
-  const link = req.user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-review-link';
+  const link = resolveReviewLink(req.user);
   const biz  = (req.user.businessName || '').trim();
 
   if (CAP <= 0) return res.status(402).json({ error: `You've used all ${smsLimitFor(req.user)} SMS included in your plan this month. Upgrade to send more.`, upgrade: '/upgrade' });
+  // Both actions below text customers — refuse rather than send a dead link.
+  if (!link) return res.status(400).json({ error: NO_LINK_ERROR });
 
   if (action === 'send_followups') {
     const due = coachDueFollowups(req.user.id).slice(0, CAP);
@@ -1330,7 +1728,7 @@ app.post('/api/coach/execute', requireAuth, requireActiveAPI, async (req, res) =
     for (const c of due) {
       const normPhone = normalizePhone(c.phone);
       if (!normPhone) { failed++; continue; }
-      const body = `Hi ${c.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${link}. Thanks!`;
+      const body = buildFollowUpSMS(c.name, c.service, biz, link);
       try {
         const r = await sendSMSWithQuota(req.user, normPhone, body);
         db.updateCustomer(c.id, { lastSmsAt: new Date().toISOString(), smsCount: (c.smsCount || 0) + 1, status: 'followup_sent' });
@@ -1507,14 +1905,17 @@ app.post('/api/optimize', optimizeRateLimit, async (req, res) => {
     if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
   }
 
+  // Capture the lead before calling the AI: if the model call fails or times
+  // out, we've still got the visitor's details instead of losing them.
+  if (email && email.includes('@')) {
+    try {
+      db.addAuditLead({ email, businessName, category, city, services, website, gbpUrl });
+      console.log(`[Lead] Captured: ${email} — ${businessName} in ${city}`);
+    } catch (e) { console.error('[Lead] save failed:', e.message); }
+  }
+
   try {
     const analysis = await generateGBPOptimization({ businessName, category, city, services, currentDescription, website, gbpUrl });
-    if (email && email.includes('@')) {
-      try {
-        db.addAuditLead({ email, businessName, category, city, services, website, gbpUrl });
-        console.log(`[Lead] Captured: ${email} — ${businessName} in ${city}`);
-      } catch (e) { console.error('[Lead] save failed:', e.message); }
-    }
     console.log(`[GBP Optimize] ${businessName} in ${city} — score ${analysis.score?.overall}`);
     return res.json({ success: true, analysis });
   } catch (err) {
@@ -1524,16 +1925,31 @@ app.post('/api/optimize', optimizeRateLimit, async (req, res) => {
 });
 
 // POST /api/gbp-starter — guided launch plan for new/unfinished profiles
-app.post('/api/gbp-starter', requireAuth, requireActiveAPI, async (req, res) => {
-  const { businessName, category, city, services, hasProfile } = req.body;
+// Public, like /api/optimize: this is a lead magnet, not a paid feature. It's
+// the best reason for a stranger to land on the site, and gating it behind
+// signup was throwing away the top of the funnel. Same rate limit and same
+// audit_leads capture as the optimizer.
+app.post('/api/gbp-starter', optimizeRateLimit, async (req, res) => {
+  const { businessName, category, city, services, hasProfile, email, ownerName } = req.body;
   if (!businessName || !category || !city) {
     return res.status(400).json({ error: 'businessName, category, and city are required.' });
   }
+  for (const [value, max, field] of [[businessName, 160, 'Business name'], [category, 100, 'Category'], [city, 120, 'City'], [services, 1000, 'Services'], [email, 254, 'Email'], [ownerName, 120, 'Name']]) {
+    if (value != null && String(value).length > max) return res.status(400).json({ error: `${field} is too long.` });
+  }
+  if (email && email.includes('@')) {
+    try {
+      db.addAuditLead({ email, businessName, category, city, services, website: null, gbpUrl: null });
+      console.log(`[Lead] Captured (starter): ${email} — ${businessName} in ${city}`);
+    } catch (e) { console.error('[Lead] save failed:', e.message); }
+  }
+
   try {
+    const signedIn = getUser(req);
     const plan = await generateGBPStarter({
       businessName, category, city, services,
       hasProfile: !!hasProfile,
-      ownerName: (req.user.name || '').split(' ')[0],
+      ownerName: ((signedIn && signedIn.name) || ownerName || '').split(' ')[0],
     });
     console.log(`[GBP Starter] ${businessName} in ${city} — ${plan.steps?.length || 0} steps`);
     return res.json({ success: true, plan });
@@ -1555,8 +1971,11 @@ app.get('/pricing',             (_req, res) => res.redirect('/#pricing'));
 app.get('/upgrade',             requireAuth, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'upgrade.html')));
 app.get('/ranking-calculator',  (_req, res) => res.sendFile(path.join(__dirname, 'public', 'ranking-calculator.html')));
 app.get('/dashboard',           requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'dashboard.html')));
-app.get('/optimize',            requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'optimize.html')));
-app.get('/starter',             requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'starter.html')));
+// Public lead magnets — these are what bring strangers in from search, and the
+// APIs behind them are rate-limited and capture the visitor as a lead. Sending
+// and the dashboard stay gated; these do not.
+app.get('/optimize',            (_req, res) => res.sendFile(path.join(__dirname, 'public', 'optimize.html')));
+app.get('/starter',             (_req, res) => res.sendFile(path.join(__dirname, 'public', 'starter.html')));
 app.get('/account',             requireAuth, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'account.html')));
 app.get('/insights',            requireAuth, requireSubscription, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'insights.html')));
 app.get('/reset-password',      (_req, res) => res.sendFile(path.join(__dirname, 'public', 'reset-password.html')));
@@ -1576,6 +1995,20 @@ if (process.env.NODE_ENV === 'production') {
   }, 10 * 60 * 1000); // every 10 minutes
 }
 
+// ── Daily database backup ─────────────────────────────────────────────────────
+// Snapshot on boot, then once a day. Keeps the last 7 in DATA_DIR/backups so a
+// bad deploy or corrupted write is recoverable rather than terminal.
+function runBackup() {
+  try {
+    const file = db.backup();
+    console.log(`[Backup] wrote ${path.basename(file)} (${db.listBackups().length} kept)`);
+  } catch (err) {
+    console.error('[Backup] failed:', err.message);
+  }
+}
+runBackup();
+setInterval(runBackup, 24 * 60 * 60 * 1000);
+
 // ── Automated follow-up scheduler ─────────────────────────────────────────────
 // Every 5 minutes: send a single follow-up SMS to customers who got the initial
 // SMS at least 3 days ago and haven't reviewed yet (max 2 total SMS per customer).
@@ -1591,9 +2024,9 @@ setInterval(async () => {
         if (!hasActiveAccess(user)) continue;
         const normPhone = normalizePhone(c.phone);
         if (!normPhone) { console.warn(`[Auto-Followup] skipping ${c.name}: invalid phone`); continue; }
-        const reviewLink = user.googleReviewLink || process.env.DEFAULT_REVIEW_LINK || 'https://g.page/r/your-link';
-        const biz = (user.businessName || '').trim();
-        const body = `Hi ${c.name}, just a friendly reminder${biz ? ` from ${biz}` : ''} — we'd love a quick Google review for the ${c.service} we did. Takes 30 seconds: ${reviewLink}. Thanks!`;
+        const reviewLink = resolveReviewLink(user);
+        if (!reviewLink) { console.warn(`[Auto-Followup] skipping ${c.name}: ${user.email} has no review link`); continue; }
+        const body = buildFollowUpSMS(c.name, c.service, user.businessName, reviewLink);
         const result = await sendSMSWithQuota(user, normPhone, body);
         db.updateCustomer(c.id, {
           lastSmsAt: new Date().toISOString(),

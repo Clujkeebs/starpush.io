@@ -5,9 +5,26 @@ A B2B local SEO & review automation platform for service businesses. Automate Go
 ## 🚀 Features
 
 ### Review Automation
-- Send SMS review requests to customers
+- Send SMS review requests to customers (automatic, with a 3-day follow-up)
+- Text a request from your phone without opening the dashboard —
+  text `Jane 5551234567 furnace repair` to your Starpush number
 - Generate professional AI replies powered by Claude
 - Automatic activity feed tracking
+
+> **What Starpush does not do:** it has no Google Business Profile API access, so
+> it cannot detect new reviews or post replies for you. You paste a review in,
+> and copy the generated reply into Google yourself. Review *requests* are fully
+> automated; review *replies* are drafted, not posted.
+
+### Review trend tracking
+- Log your real Google review count and rating over time
+- Charts the movement and reports reviews gained per month
+
+### Compliance
+- Every outbound message carries "Reply STOP to opt out"
+- Platform-wide suppression list (all tenants share one sending number)
+- Twilio webhook signature verification on inbound messages
+- SMS consent attestation at signup; email verification gates sending
 
 ### GBP Starter (new)
 - Guided, step-by-step setup helper for businesses creating their Google Business Profile from scratch
@@ -93,8 +110,11 @@ git push heroku main
 | GET | `/insights` | ✓ | AI Growth Coach |
 | POST | `/api/auth/signup` | — | Create user account |
 | POST | `/api/auth/login` | — | Log in |
-| POST | `/api/gbp-starter` | ✓ | Build a GBP launch plan |
-| POST | `/api/optimize` | — | Run GBP audit |
+| POST | `/api/gbp-starter` | — | Build a GBP launch plan (lead magnet, rate-limited) |
+| POST | `/api/optimize` | — | Run GBP audit (lead magnet, rate-limited) |
+| GET | `/api/trend` | ✓ | Review count/rating trend |
+| POST | `/api/trend/snapshot` | ✓ | Log today's Google totals |
+| GET | `/api/auth/verify-email` | — | Confirm email (unlocks SMS sending) |
 | POST | `/api/send-request` | ✓ | Send review request SMS |
 | POST | `/api/webhook/review` | ✓ | Receive review webhook |
 | GET | `/api/feed` | ✓ | Activity feed |
@@ -116,9 +136,30 @@ Configure Twilio's inbound messaging webhook to:
 `https://starpush.io/api/webhook/twilio-inbound`
 - Defaults: `claude-sonnet-4-6` (GBP Optimizer), `claude-haiku-4-5-20251001` (replies)
 
-**Twilio** (Optional)
+**Twilio** (required for SMS)
 - Get trial: https://console.twilio.com
 - Phone number required for SMS
+- **A2P 10DLC registration is required** for US traffic — register a Brand and
+  a Campaign under Messaging → Regulatory Compliance. Sample messages must match
+  what the app sends, including the "Reply STOP to opt out." suffix. Unregistered
+  traffic gets filtered or blocked by carriers.
+- Set the inbound messaging webhook to `/api/webhook/twilio-inbound`. Requests
+  are verified against `TWILIO_AUTH_TOKEN`, so the token must be set or every
+  inbound STOP is rejected.
+
+**Required secrets**
+- `JWT_SECRET` — falls back to a known dev string if unset; anyone can forge a
+  session cookie. Generate with
+  `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+- `ADMIN_KEY` — guards the lead-export endpoints.
+- `SMTP_*` — email verification gates SMS sending, so without SMTP a new signup
+  can never send a text.
+
+## 💾 Backups
+
+The database is snapshotted to `DATA_DIR/backups/` on boot and once a day
+(`VACUUM INTO`, last 7 kept). To restore, stop the service and copy a snapshot
+over `starpush.db`.
 
 ## 💳 Stripe Setup (payments)
 

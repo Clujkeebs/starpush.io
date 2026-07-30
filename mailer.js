@@ -130,6 +130,44 @@ function sendWelcome(email, name) {
 }
 
 /**
+ * Send an email-verification link. Verification gates SMS sending, so this is
+ * the one email a new account must act on before it can text anyone.
+ */
+function sendEmailVerification(email, name, verifyUrl) {
+  const first = (name || '').split(' ')[0] || 'there';
+  return sendMail({
+    to:      email,
+    subject: 'Confirm your email to start sending review requests',
+    text:    `Hi ${first},\n\nConfirm your email address to unlock SMS sending on your Starpush account:\n\n${verifyUrl}\n\nThis link expires in 48 hours. Everything else in the app works right now — this step only gates texting customers.\n\n— The Starpush Team`,
+    html: `
+      <div style="font-family:Inter,system-ui,sans-serif;max-width:520px;margin:0 auto;padding:32px 24px;background:#f9fafb">
+        <div style="background:#fff;border-radius:12px;padding:32px;border:1px solid #e5e7eb">
+          <div style="font-size:20px;font-weight:800;color:#0d2137;margin-bottom:8px">🚀 Starpush</div>
+          <h1 style="font-size:22px;font-weight:700;color:#111827;margin:0 0 12px">Confirm your email</h1>
+          <p style="color:#374151;margin:0 0 24px;line-height:1.6">
+            Hi ${first} — one quick step. Confirm your email to unlock SMS sending.
+            This link expires in <strong>48 hours</strong>.
+          </p>
+          <a href="${verifyUrl}"
+             style="display:inline-block;background:#4f46e5;color:#fff;font-weight:700;font-size:15px;padding:14px 28px;border-radius:8px;text-decoration:none;margin-bottom:24px">
+            Confirm my email →
+          </a>
+          <p style="color:#9ca3af;font-size:13px;margin:0;line-height:1.6">
+            Everything else in your account works right now — this step only gates texting customers,
+            which keeps our sending reputation clean for every business on Starpush.
+          </p>
+          <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0" />
+          <p style="color:#9ca3af;font-size:12px;margin:0">
+            starpush.io by clujkeebs · <a href="https://starpush.io" style="color:#6b7280">starpush.io</a> ·
+            <a href="mailto:clujkeebs@aol.com" style="color:#6b7280">clujkeebs@aol.com</a>
+          </p>
+        </div>
+      </div>
+    `,
+  });
+}
+
+/**
  * Send a trial expiry reminder (day 7 or day 1 before end).
  */
 function sendTrialReminder(email, name, daysLeft) {
@@ -171,4 +209,4 @@ function sendTrialReminder(email, name, daysLeft) {
   });
 }
 
-module.exports = { sendMail, sendPasswordReset, sendWelcome, sendTrialReminder };
+module.exports = { sendMail, sendPasswordReset, sendWelcome, sendEmailVerification, sendTrialReminder };

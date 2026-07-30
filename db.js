@@ -66,6 +66,32 @@ sqlite.exec(`
     updated_at TEXT
   );
 
+  -- Owner-reported Google totals over time. The activity feed only knows about
+  -- reviews the owner pasted into Starpush, which is not the same as their real
+  -- Google review count — so the trend that actually answers "is this working?"
+  -- has to come from the owner reading their profile and logging the number.
+  CREATE TABLE IF NOT EXISTS review_snapshots (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL REFERENCES users(id),
+    taken_on     TEXT NOT NULL,          -- YYYY-MM-DD, one snapshot per day
+    review_count INTEGER NOT NULL,
+    avg_rating   REAL,
+    created_at   TEXT DEFAULT (datetime('now')),
+    UNIQUE (user_id, taken_on)
+  );
+
+  -- Global SMS suppression list, keyed by the last 10 digits of the number.
+  -- All tenants share one Twilio sending number, so a STOP reply suppresses
+  -- that number for the whole platform — Twilio enforces it at the number
+  -- level regardless of which business sent the text. Tracking it per-user
+  -- only (customers.opted_out) meant another tenant would keep trying and
+  -- get an opaque Twilio 21610 with no record of why.
+  CREATE TABLE IF NOT EXISTS sms_suppressions (
+    phone_digits TEXT PRIMARY KEY,
+    reason       TEXT,
+    created_at   TEXT DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS audit_leads (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT,
@@ -91,6 +117,27 @@ try { sqlite.exec('ALTER TABLE customers ADD COLUMN opted_out INTEGER DEFAULT 0'
 try { sqlite.exec('ALTER TABLE activity_feed ADD COLUMN archived INTEGER DEFAULT 0'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN reminder_7_sent_at TEXT'); } catch {}
 try { sqlite.exec('ALTER TABLE users ADD COLUMN reminder_1_sent_at TEXT'); } catch {}
+// TCPA/CTIA: record that the owner attested their customers consented to be
+// texted. Existing accounts predate the checkbox, so they stay NULL — the
+// send path treats NULL as "not yet attested" and prompts once.
+try { sqlite.exec('ALTER TABLE users ADD COLUMN sms_consent_at TEXT'); } catch {}
+// Email verification — required before any SMS can be sent, so a scripted
+// signup can't use the shared Twilio number as an open relay.
+try { sqlite.exec('ALTER TABLE users ADD COLUMN email_verified_at TEXT'); } catch {}
+try { sqlite.exec('ALTER TABLE users ADD COLUMN verify_token TEXT'); } catch {}
+
+// One-time backfill: accounts that existed before email verification was
+// introduced are grandfathered as verified. Without this, adding the SMS
+// verification gate would lock every current customer out of sending on deploy.
+// Runs once — after the first pass no rows have a NULL email_verified_at.
+try {
+  const backfilled = sqlite.prepare(
+    "UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL AND verify_token IS NULL"
+  ).run();
+  if (backfilled.changes) {
+    console.log(`[db] Grandfathered ${backfilled.changes} pre-existing account(s) as email-verified.`);
+  }
+} catch {}
 
 // One-time cleanup: lowercase + trim stored emails so lookups always match.
 // Row-by-row so a rare case-only duplicate (unique constraint) skips instead
@@ -113,6 +160,7 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS idx_customers_user_id       ON customers(user_id);
   CREATE INDEX IF NOT EXISTS idx_activity_user_ts        ON activity_feed(user_id, timestamp DESC);
   CREATE INDEX IF NOT EXISTS idx_audit_leads_email       ON audit_leads(email);
+  CREATE INDEX IF NOT EXISTS idx_snapshots_user_date     ON review_snapshots(user_id, taken_on);
 `);
 
 // ── Case conversion helpers ──────────────────────────────────────────────────
@@ -140,6 +188,12 @@ const SNAKE_TO_CAMEL = {
   archived:               'archived',
   reminder_7_sent_at:     'reminder7SentAt',
   reminder_1_sent_at:     'reminder1SentAt',
+  taken_on:               'takenOn',
+  review_count:           'reviewCount',
+  avg_rating:             'avgRating',
+  sms_consent_at:         'smsConsentAt',
+  email_verified_at:      'emailVerifiedAt',
+  verify_token:           'verifyToken',
   gbp_url:                'gbpUrl',
 };
 
@@ -172,17 +226,21 @@ const stmts = {
   // match would say "No account found" for a real account.
   getUserByEmail:      sqlite.prepare('SELECT * FROM users WHERE email = ? COLLATE NOCASE'),
   getUserByResetToken:       sqlite.prepare('SELECT * FROM users WHERE reset_token = ?'),
+  getUserByVerifyToken:      sqlite.prepare('SELECT * FROM users WHERE verify_token = ?'),
   getUserByStripeCustomerId: sqlite.prepare('SELECT * FROM users WHERE stripe_customer_id = ?'),
+  getUserByPhone:            sqlite.prepare("SELECT * FROM users WHERE replace(replace(replace(replace(replace(phone,'+',''),'-',''),' ',''),'(',''),')','') LIKE ?"),
   getAllUsers:     sqlite.prepare('SELECT * FROM users ORDER BY created_at DESC'),
   insertUser:     sqlite.prepare(`
     INSERT INTO users (id, name, email, password_hash, business_name, trade, phone,
                        plan, trial_ends_at, subscription_status,
                        stripe_customer_id, stripe_subscription_id,
-                       reset_token, reset_expires, promo_code, created_at)
+                       reset_token, reset_expires, promo_code,
+                       sms_consent_at, email_verified_at, verify_token, created_at)
     VALUES (@id, @name, @email, @password_hash, @business_name, @trade, @phone,
             @plan, @trial_ends_at, @subscription_status,
             @stripe_customer_id, @stripe_subscription_id,
-            @reset_token, @reset_expires, @promo_code, @created_at)
+            @reset_token, @reset_expires, @promo_code,
+            @sms_consent_at, @email_verified_at, @verify_token, @created_at)
   `),
   deleteUser: sqlite.prepare('DELETE FROM users WHERE id = ?'),
 
@@ -262,6 +320,19 @@ db.getUserByStripeCustomerId = function getUserByStripeCustomerId(customerId) {
   return rowToCamel(stmts.getUserByStripeCustomerId.get(customerId));
 };
 
+db.getUserByVerifyToken = function getUserByVerifyToken(token) {
+  return rowToCamel(stmts.getUserByVerifyToken.get(token));
+};
+
+// Match an owner by the phone they signed up with, ignoring formatting, so an
+// inbound text can be attributed to their account. Compares the last 10 digits
+// so +15551234567 and (555) 123-4567 resolve to the same owner.
+db.getUserByPhone = function getUserByPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  return rowToCamel(stmts.getUserByPhone.get(`%${digits.slice(-10)}`));
+};
+
 db.createUser = function createUser(data) {
   const params = {
     id:                      data.id,
@@ -281,6 +352,9 @@ db.createUser = function createUser(data) {
     promo_code:              data.promoCode     || null,
     reminder_7_sent_at:      data.reminder7SentAt || null,
     reminder_1_sent_at:      data.reminder1SentAt || null,
+    sms_consent_at:          data.smsConsentAt    || null,
+    email_verified_at:       data.emailVerifiedAt || null,
+    verify_token:            data.verifyToken     || null,
     created_at:              data.createdAt     || new Date().toISOString(),
   };
   stmts.insertUser.run(params);
@@ -293,6 +367,7 @@ db.updateUser = function updateUser(id, fields) {
     'smsTemplate', 'passwordHash', 'resetToken', 'resetExpires',
     'plan', 'trialEndsAt', 'subscriptionStatus', 'stripeCustomerId',
     'stripeSubscriptionId', 'promoCode', 'reminder7SentAt', 'reminder1SentAt',
+    'smsConsentAt', 'emailVerifiedAt', 'verifyToken',
   ]);
   const sets = [];
   const values = {};
@@ -446,6 +521,62 @@ db.archiveFeed = function archiveFeed(userId) {
 
 // ── Audit Leads ──────────────────────────────────────────────────────────────
 
+// ── Review snapshots (owner-reported Google totals) ──────────────────────────
+
+// One snapshot per user per day — logging twice in a day corrects the entry
+// rather than creating a second point.
+db.upsertReviewSnapshot = function upsertReviewSnapshot({ userId, takenOn, reviewCount, avgRating }) {
+  const day = takenOn || new Date().toISOString().slice(0, 10);
+  sqlite.prepare(`
+    INSERT INTO review_snapshots (user_id, taken_on, review_count, avg_rating, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, taken_on) DO UPDATE SET
+      review_count = excluded.review_count,
+      avg_rating   = excluded.avg_rating
+  `).run(userId, day, reviewCount, avgRating ?? null, new Date().toISOString());
+  return db.getReviewSnapshots(userId);
+};
+
+db.getReviewSnapshots = function getReviewSnapshots(userId, limit = 60) {
+  return sqlite.prepare(
+    'SELECT * FROM review_snapshots WHERE user_id = ? ORDER BY taken_on ASC LIMIT ?'
+  ).all(userId, limit).map(rowToCamel);
+};
+
+db.deleteReviewSnapshot = function deleteReviewSnapshot(userId, takenOn) {
+  sqlite.prepare('DELETE FROM review_snapshots WHERE user_id = ? AND taken_on = ?').run(userId, takenOn);
+};
+
+// ── SMS suppression (global, platform-wide) ──────────────────────────────────
+
+function suppressionKey(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : null;
+}
+
+db.suppressPhone = function suppressPhone(phone, reason = 'stop_reply') {
+  const key = suppressionKey(phone);
+  if (!key) return false;
+  sqlite.prepare(
+    'INSERT INTO sms_suppressions (phone_digits, reason, created_at) VALUES (?, ?, ?) ' +
+    'ON CONFLICT(phone_digits) DO UPDATE SET reason = excluded.reason'
+  ).run(key, reason, new Date().toISOString());
+  return true;
+};
+
+db.unsuppressPhone = function unsuppressPhone(phone) {
+  const key = suppressionKey(phone);
+  if (!key) return false;
+  sqlite.prepare('DELETE FROM sms_suppressions WHERE phone_digits = ?').run(key);
+  return true;
+};
+
+db.isPhoneSuppressed = function isPhoneSuppressed(phone) {
+  const key = suppressionKey(phone);
+  if (!key) return false;
+  return !!sqlite.prepare('SELECT 1 FROM sms_suppressions WHERE phone_digits = ?').get(key);
+};
+
 db.addAuditLead = function addAuditLead(data) {
   const params = {
     email:         data.email         || null,
@@ -593,6 +724,43 @@ db.migrateFromJSON = function migrateFromJSON() {
   }
 
   console.log('[db] Migration complete.');
+};
+
+// ── Backups ──────────────────────────────────────────────────────────────────
+// The whole business lives in one SQLite file on one Render disk: users, their
+// customers, and the Stripe IDs that map subscriptions to accounts. A single
+// disk incident loses all of it. VACUUM INTO takes a consistent snapshot of a
+// live WAL database without stopping writes.
+const BACKUP_DIR   = path.join(DATA_DIR, 'backups');
+const BACKUP_KEEP  = 7;
+
+db.backup = function backup() {
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const dest  = path.join(BACKUP_DIR, `starpush-${stamp}.db`);
+  // VACUUM INTO refuses to overwrite, so a same-second retry is a no-op.
+  if (fs.existsSync(dest)) return dest;
+  sqlite.prepare('VACUUM INTO ?').run(dest);
+
+  // Prune oldest beyond BACKUP_KEEP.
+  const snaps = fs.readdirSync(BACKUP_DIR)
+    .filter(f => f.startsWith('starpush-') && f.endsWith('.db'))
+    .sort();
+  for (const stale of snaps.slice(0, Math.max(0, snaps.length - BACKUP_KEEP))) {
+    try { fs.unlinkSync(path.join(BACKUP_DIR, stale)); } catch {}
+  }
+  return dest;
+};
+
+db.listBackups = function listBackups() {
+  if (!fs.existsSync(BACKUP_DIR)) return [];
+  return fs.readdirSync(BACKUP_DIR)
+    .filter(f => f.startsWith('starpush-') && f.endsWith('.db'))
+    .sort()
+    .map(f => {
+      const full = path.join(BACKUP_DIR, f);
+      return { file: f, bytes: fs.statSync(full).size, path: full };
+    });
 };
 
 // ── Auto-run migration on first require ──────────────────────────────────────

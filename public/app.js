@@ -142,13 +142,21 @@ function paintStars(n) {
 // Mirrors buildSMSFromTemplate in server.js — keep in sync so the preview
 // matches what the customer actually receives.
 function bizName() { return (window._currentUser?.businessName || '').trim(); }
+// Kept in sync with buildSMSFromTemplate() in server.js — this is only the
+// preview, but a preview that doesn't match what actually goes out is worse
+// than no preview (the char count drives the owner's editing decisions).
+const OPT_OUT_NOTICE = 'Reply STOP to opt out.';
+function withOptOutNotice(msg) {
+  return /\bstop\b/i.test(msg) ? msg : `${msg} ${OPT_OUT_NOTICE}`;
+}
+
 const SMS_TEMPLATES = {
   standard: (name, service, link) =>
-    `Hi ${name}, thanks for choosing ${bizName() || 'us'} for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${link}`,
+    `Hi ${name}, thanks for choosing ${bizName() || 'us'} for your ${service}! Could you leave us a quick Google review? ${link}`,
   brief: (name, service, link) =>
-    `Hi ${name}! Quick favour — could you leave ${bizName() || 'us'} a Google review for your ${service}? ${link} Takes 30 secs, means the world 🙏`,
+    `Hi ${name}! Could you leave ${bizName() || 'us'} a Google review for your ${service}? ${link} Takes 30 secs 🙏`,
   personal: (name, service, link) =>
-    `Hey ${name}! It was a pleasure working on your ${service} today. If you're happy with the work, an honest Google review would help ${bizName() ? `us at ${bizName()}` : 'us'} enormously: ${link} — thanks so much!`,
+    `Hey ${name}! Pleasure working on your ${service}. If you're happy with it, an honest Google review would help ${bizName() ? `us at ${bizName()}` : 'us'} a lot: ${link}`,
   custom: (name, service, link) => {
     const tpl = window._currentUser?.smsTemplate;
     if (!tpl) return SMS_TEMPLATES.standard(name, service, link);
@@ -175,7 +183,7 @@ let activeTpl = localStorage.getItem('rp_tpl') || 'standard';
 
 function buildSMSBody(name, service, link) {
   const tpl = SMS_TEMPLATES[activeTpl] || SMS_TEMPLATES.standard;
-  return tpl(name, service, link);
+  return withOptOutNotice(tpl(name, service, link));
 }
 
 /* ── SMS preview: update as user types ──────────────────────────────────── */
@@ -184,7 +192,7 @@ function updateSMSPreview() {
   const service = (smsForm.service?.value || '').trim() || '[service]';
   const link    = (smsForm.reviewLink?.value || '').trim() ||
                   window._currentUser?.googleReviewLink ||
-                  'https://g.page/r/your-review-link';
+                  '[add your Google review link in Account Settings]';
   const msg = buildSMSBody(name, service, link);
   const preview  = document.getElementById('sms-preview-text');
   const chars    = document.getElementById('sms-char-count');

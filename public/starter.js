@@ -34,7 +34,10 @@ startBtn.addEventListener('click', async () => {
     const res  = await fetch('/api/gbp-starter', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ businessName: name, category, city, services, hasProfile }),
+      body:    JSON.stringify({
+        businessName: name, category, city, services, hasProfile,
+        email: document.getElementById('f-email')?.value.trim() || '',
+      }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Could not build your plan. Please try again.');

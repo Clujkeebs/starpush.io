@@ -145,6 +145,35 @@ a.signup-logo-by:hover { color: #fbbf24; }
   box-shadow: 0 0 0 3px rgba(220,38,38,.1);
 }
 
+/* ── SMS consent attestation ─────────────────────────────────────────────── */
+.sf-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #4b5563;
+  cursor: pointer;
+}
+.sf-consent input[type="checkbox"] {
+  flex-shrink: 0;
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  accent-color: var(--navy, #1d4ed8);
+  cursor: pointer;
+}
+.sf-consent:has(input:checked) {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+  color: #374151;
+}
+
 /* ── Error ───────────────────────────────────────────────────────────────── */
 .sf-error {
   background: #fef2f2;

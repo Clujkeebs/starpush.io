@@ -390,6 +390,70 @@
         </p>
       </div>
 
+      <!-- Review trend: the "is this actually working?" card -->
+      <div class="card" id="trend-card">
+        <div class="card-hd">
+          <h2 class="card-title">📈 Is it working?</h2>
+          <p class="card-sub">Your real Google review count over time</p>
+        </div>
+
+        <div id="trend-empty" style="font-size:13px;color:#475569;line-height:1.6">
+          Open your Google Business Profile, read your review total and star
+          rating, and log them here. Do it again in a few weeks and you'll see
+          whether Starpush is moving the needle — in your real numbers, not ours.
+        </div>
+
+        <div id="trend-progress" class="hidden" style="margin-bottom:12px">
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <span id="trend-gain" style="font-size:30px;font-weight:800;color:#0d2137;line-height:1">—</span>
+            <span style="font-size:13px;color:#475569">new reviews since you started tracking</span>
+          </div>
+          <div id="trend-detail" style="font-size:12px;color:#94a3b8;margin-top:4px"></div>
+        </div>
+
+        <svg id="trend-chart" class="hidden" viewBox="0 0 320 96" preserveAspectRatio="none"
+             style="width:100%;height:96px;margin-bottom:10px" role="img" aria-label="Google review count over time"></svg>
+
+        <form id="trend-form" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:12px">
+          <div style="flex:1;min-width:110px">
+            <label for="trend-count" style="display:block;font-size:11px;color:#64748b;margin-bottom:4px">Total reviews</label>
+            <input id="trend-count" type="number" min="0" step="1" inputmode="numeric" placeholder="34"
+              style="width:100%;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px" />
+          </div>
+          <div style="flex:1;min-width:110px">
+            <label for="trend-rating" style="display:block;font-size:11px;color:#64748b;margin-bottom:4px">Star rating</label>
+            <input id="trend-rating" type="number" min="1" max="5" step="0.1" inputmode="decimal" placeholder="4.6"
+              style="width:100%;padding:8px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px" />
+          </div>
+          <button type="submit" class="btn btn-primary" style="padding:9px 16px;font-size:13px">Log today</button>
+        </form>
+        <div id="trend-msg" style="font-size:12px;margin-top:8px"></div>
+      </div>
+
+      <!-- Text-to-send: the fastest path, no dashboard needed -->
+      <div class="card" id="text-to-send-card">
+        <div class="card-hd">
+          <h2 class="card-title">🚚 Send from the truck</h2>
+          <p class="card-sub">No login, no dashboard — just text us</p>
+        </div>
+        <p style="font-size:13px;color:#475569;line-height:1.6;margin-bottom:10px">
+          Save our number in your phone. When you finish a job, text us the customer's
+          name, their number, and what you did — we'll send the review request.
+        </p>
+        <div style="background:#0d2137;border-radius:8px;padding:12px 14px;margin-bottom:10px">
+          <div style="font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#93c5fd;margin-bottom:6px">Text this</div>
+          <code style="font-size:13px;color:#fff;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">Jane 5551234567 furnace repair</code>
+        </div>
+        <div id="tts-number-wrap" style="font-size:13px;color:#475569">
+          <span style="color:#94a3b8">Your Starpush number:</span>
+          <strong id="tts-number">—</strong>
+        </div>
+        <p style="font-size:11px;color:#94a3b8;margin-top:10px;line-height:1.5">
+          Only works from the business phone on your account (<span id="tts-owner-phone">—</span>).
+          Text <strong>HELP</strong> for a reminder of the format.
+        </p>
+      </div>
+
       <!-- GBP Starter promo -->
       <div class="card card-gbp-promo">
         <div class="gbp-promo-icon">🧭</div>
@@ -688,9 +752,31 @@
           }
         }
 
+        // Text-to-send card: needs both our sending number and the owner's
+        // phone on file (that's how we attribute an inbound text to them).
+        const ttsCard = document.getElementById('text-to-send-card');
+        if (ttsCard) {
+          if (!user.smsFromNumber) {
+            ttsCard.classList.add('hidden');
+          } else {
+            const fmt = (p) => {
+              const d = String(p || '').replace(/\D/g, '').slice(-10);
+              return d.length === 10 ? `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}` : p;
+            };
+            document.getElementById('tts-number').textContent = fmt(user.smsFromNumber);
+            const ownerPhoneEl = document.getElementById('tts-owner-phone');
+            if (user.phone) {
+              ownerPhoneEl.textContent = fmt(user.phone);
+            } else {
+              ownerPhoneEl.innerHTML = '<a href="/account" style="color:#1d4ed8;font-weight:600">add your business phone</a>';
+            }
+          }
+        }
+
         // Setup checklist
         window._currentUser = user;
         updateChecklist(user);
+        loadTrend();
 
         // Welcome modal
         const params = new URLSearchParams(window.location.search);
@@ -1153,14 +1239,21 @@
       // Copy All — copies all pending messages to clipboard
       copyAllBtn?.addEventListener('click', () => {
         const service    = document.getElementById('service')?.value.trim() || '[service]';
-        const reviewLink = document.getElementById('reviewLink')?.value.trim() || 'https://g.page/r/your-review-link';
+        const reviewLink = document.getElementById('reviewLink')?.value.trim()
+                        || window._currentUser?.googleReviewLink || '';
+        if (!reviewLink) {
+          alert('Add your Google review link first (Account Settings) — otherwise these texts have nowhere to send your customers.');
+          return;
+        }
         const rows = [...rowsWrap.querySelectorAll('.batch-row')];
         const messages = rows
           .map(r => {
             const name  = r.querySelector('.batch-name')?.value.trim();
             const phone = r.querySelector('.batch-phone')?.value.trim();
             if (!name || !phone) return null;
-            return `${phone}: Hi ${name}, thanks for choosing us for your ${service}! Could you leave us a quick Google review? It only takes 30 seconds: ${reviewLink}`;
+            // These get sent from the owner's own phone, so the opt-out line has
+            // to be in the copied text — we can't append it for them later.
+            return `${phone}: Hi ${name}, thanks for choosing us for your ${service}! Could you leave us a quick Google review? ${reviewLink} Reply STOP to opt out.`;
           })
           .filter(Boolean)
           .join('\n\n');
@@ -1345,6 +1438,101 @@
     document.getElementById('logout-btn')?.addEventListener('click', async () => {
       await fetch('/api/auth/logout', { method: 'POST' });
       window.location.href = '/';
+    });
+
+    // ── Review trend ─────────────────────────────────────────────────────
+    // Plots the owner's self-reported Google totals. Deliberately their real
+    // numbers rather than what Starpush has seen, so the card can't flatter us.
+    function renderTrendChart(snapshots) {
+      const svg = document.getElementById('trend-chart');
+      if (!svg) return;
+      if (snapshots.length < 2) { svg.classList.add('hidden'); return; }
+      svg.classList.remove('hidden');
+
+      const W = 320, H = 96, PAD = 6;
+      const counts = snapshots.map(s => s.reviewCount);
+      const min = Math.min(...counts), max = Math.max(...counts);
+      const span = max - min || 1;
+      const t0 = new Date(snapshots[0].takenOn).getTime();
+      const t1 = new Date(snapshots[snapshots.length - 1].takenOn).getTime();
+      const tSpan = (t1 - t0) || 1;
+
+      const pts = snapshots.map(s => {
+        const x = PAD + ((new Date(s.takenOn).getTime() - t0) / tSpan) * (W - PAD * 2);
+        const y = (H - PAD) - ((s.reviewCount - min) / span) * (H - PAD * 2);
+        return [x, y];
+      });
+      const line = pts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+      const area = `${PAD},${H - PAD} ${line} ${(W - PAD)},${H - PAD}`;
+
+      svg.innerHTML =
+        `<polygon points="${area}" fill="rgba(29,78,216,.10)" />` +
+        `<polyline points="${line}" fill="none" stroke="#1d4ed8" stroke-width="2" ` +
+        `stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke" />` +
+        pts.map(([x, y]) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#1d4ed8" />`).join('');
+    }
+
+    async function loadTrend() {
+      const card = document.getElementById('trend-card');
+      if (!card) return;
+      try {
+        const r = await fetch('/api/trend');
+        if (!r.ok) return;
+        const { snapshots, progress } = await r.json();
+
+        const emptyEl = document.getElementById('trend-empty');
+        const progEl  = document.getElementById('trend-progress');
+
+        if (snapshots.length) {
+          const latest = snapshots[snapshots.length - 1];
+          document.getElementById('trend-count').value  = latest.reviewCount;
+          if (latest.avgRating != null) document.getElementById('trend-rating').value = latest.avgRating;
+        }
+
+        if (progress) {
+          emptyEl.classList.add('hidden');
+          progEl.classList.remove('hidden');
+          const gain = progress.reviewsGained;
+          const gainEl = document.getElementById('trend-gain');
+          gainEl.textContent = (gain >= 0 ? '+' : '') + gain;
+          gainEl.style.color = gain > 0 ? '#047857' : '#0d2137';
+          const bits = [`${progress.days} days tracked · about ${progress.perMonth}/month`];
+          if (progress.ratingChange != null && progress.ratingChange !== 0) {
+            bits.push(`rating ${progress.ratingChange > 0 ? 'up' : 'down'} ${Math.abs(progress.ratingChange).toFixed(2)}★`);
+          }
+          document.getElementById('trend-detail').textContent = bits.join(' · ');
+        } else if (snapshots.length === 1) {
+          emptyEl.classList.remove('hidden');
+          emptyEl.textContent = `Logged ${snapshots[0].reviewCount} reviews on ${snapshots[0].takenOn}. Come back in a couple of weeks and log it again — two points make a trend.`;
+        }
+
+        renderTrendChart(snapshots);
+      } catch {}
+    }
+
+    document.getElementById('trend-form')?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById('trend-msg');
+      const countEl  = document.getElementById('trend-count');
+      const ratingEl = document.getElementById('trend-rating');
+      msg.textContent = '';
+      msg.style.color = '#dc2626';
+
+      if (countEl.value === '') { msg.textContent = 'Enter your total Google review count.'; return; }
+      try {
+        const r = await fetch('/api/trend/snapshot', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewCount: Number(countEl.value), avgRating: ratingEl.value }),
+        });
+        const data = await r.json();
+        if (!r.ok) { msg.textContent = data.error || 'Could not save that.'; return; }
+        msg.style.color = '#047857';
+        msg.textContent = 'Saved. ✅';
+        await loadTrend();
+      } catch {
+        msg.textContent = 'Network error — please try again.';
+      }
     });
 
     // ── Setup checklist ──────────────────────────────────────────────────

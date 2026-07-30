@@ -84,6 +84,14 @@
             </div>
           </div>
 
+          <label class="sf-consent" for="s-consent">
+            <input type="checkbox" id="s-consent" />
+            <span>
+              I will only text customers who have done business with me and agreed to be
+              contacted. Every message includes “Reply STOP to opt out.”
+            </span>
+          </label>
+
           <div id="sf-error" class="sf-error hidden"></div>
 
           <button class="sf-submit" type="submit" id="sf-btn">
@@ -104,44 +112,41 @@
     <div class="signup-proof-col">
       <div class="proof-inner">
 
-        <div class="proof-headline">Join 1,200+ local businesses already dominating Google Maps.</div>
+        <div class="proof-headline">Stop forgetting to ask for reviews.</div>
 
         <div class="proof-checks">
           <div class="proof-check">✓ Free 14-day trial, no credit card</div>
-          <div class="proof-check">✓ Unlimited SMS review requests</div>
-          <div class="proof-check">✓ AI replies with local SEO keywords baked in</div>
+          <div class="proof-check">✓ SMS review requests — 150/mo on Starter</div>
+          <div class="proof-check">✓ AI-drafted replies with your city and trade in them</div>
           <div class="proof-check">✓ 🤖 AI Growth Coach — weekly action plan</div>
           <div class="proof-check">✓ 🚨 Review Shield — negative review damage control</div>
-          <div class="proof-check">✓ 📲 QR Code Generator — print &amp; get reviews offline</div>
           <div class="proof-check">✓ GBP Optimizer — full profile audit &amp; action plan</div>
           <div class="proof-check">✓ Set up in about 10 minutes · Cancel anytime</div>
         </div>
 
         <div class="proof-quotes">
           <div class="proof-quote">
-            <div class="proof-stars">★★★★★</div>
-            <p>"We went from 34 reviews to 127 in six weeks. Starpush is the best thing I've added to my business this year."</p>
-            <div class="proof-attr">— Marcus D., Blue Ridge HVAC · Austin, TX</div>
-          </div>
-          <div class="proof-quote">
-            <div class="proof-stars">★★★★★</div>
-            <p>"Our Google Maps calls went up 34% in the first month. It was purely the reviews and AI replies."</p>
-            <div class="proof-attr">— Tony B., Apex Roofing · Phoenix, AZ</div>
+            <p><strong>Starpush is new.</strong> We're not going to invent customer
+            quotes to convince you — you'd find out either way.</p>
+            <p style="margin-top:10px">Here's the honest pitch: your customers would leave
+            a review if you asked at the right moment, and you don't, because the job
+            ends and the day moves on. Starpush is the thing that asks.</p>
+            <div class="proof-attr">— clujkeebs, founder</div>
           </div>
         </div>
 
         <div class="proof-stat-row">
           <div class="proof-stat">
-            <span class="ps-num">48,000+</span>
-            <span class="ps-lbl">Reviews Generated</span>
+            <span class="ps-num">14 days</span>
+            <span class="ps-lbl">Free, no card</span>
           </div>
           <div class="proof-stat">
-            <span class="ps-num">4.87 ★</span>
-            <span class="ps-lbl">Avg Client Rating</span>
+            <span class="ps-num">30-day</span>
+            <span class="ps-lbl">Money-back guarantee</span>
           </div>
           <div class="proof-stat">
-            <span class="ps-num">2.3×</span>
-            <span class="ps-lbl">Avg Ranking Lift</span>
+            <span class="ps-num">$49</span>
+            <span class="ps-lbl">Starter, per month</span>
           </div>
         </div>
 
@@ -203,6 +208,12 @@
         shake(document.getElementById('s-password'));
         return;
       }
+      const consentEl = document.getElementById('s-consent');
+      if (!consentEl.checked) {
+        showError('Please confirm you only text customers who agreed to be contacted — this keeps your account (and ours) compliant.');
+        shake(consentEl.closest('.sf-consent'));
+        return;
+      }
 
       setBusy(true);
 
@@ -218,6 +229,7 @@
             trade:     document.getElementById('s-trade').value,
             phone:     document.getElementById('s-phone').value.trim(),
             plan:      plan || 'trial',
+            smsConsent: true,
           }),
         });
 
