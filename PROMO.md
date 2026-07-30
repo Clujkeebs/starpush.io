@@ -1,25 +1,27 @@
-# Promo code: `dro` — owner-controlled complimentary trial
+# Promo code — owner-controlled complimentary trial
 
-Entering the promo code **`dro`** (lowercase) on the signup page gives a user a
-**complimentary free trial**: full access to the app, presented as a normal free
-trial, with the trial clock set to the year 2099 so it never runs out on its own.
+Set the `PROMO_CODE` environment variable to enable a single promotional signup
+code. **Leave it unset and promo codes are disabled entirely** — the signup
+endpoint ignores any code supplied.
 
-These accounts are marked in the database with `promo_code = 'dro'`.
+> Don't write the live code into this file or anywhere else in the repo. It
+> lives in the environment so it can be rotated without a deploy, and so a
+> public repo doesn't hand out free accounts. The comparison is timing-safe
+> (`crypto.timingSafeEqual`) and case-insensitive.
 
-## How it looks to the user
+## What it does
 
-- The signup form shows a green **FREE TRIAL ✓** badge and "your free trial is on us!"
-- They get full access, exactly like a paying customer, for as long as you allow it.
-- No Stripe checkout, no card required.
+A signup with a matching code gets a **90-day complimentary trial** instead of
+the standard 14 days — full access, no Stripe checkout, no card. These accounts
+are marked in the database with `promo_code = 'promo'` (the literal code itself
+is never stored).
 
-## Ending a complimentary trial (when the owner decides)
+## Ending a complimentary trial
 
-When you want to end someone's free trial, their access is switched off and they
-see **"Your free trial has ended — upgrade to keep going,"** and must pay to
-continue. **Their data is never deleted** — customers, activity, settings all stay
-intact; only access is gated.
-
-To end a specific user's trial, set their trial end date to the past:
+Access is gated by `hasActiveAccess()`, so setting the trial end date to the
+past is enough. **No data is deleted** — customers, activity, and settings stay
+intact; the user simply sees "Your free trial has ended — upgrade to keep
+going" and protected pages redirect to `/upgrade?expired=1`.
 
 ```js
 // Node REPL / one-off script, run from the project root:
@@ -31,14 +33,11 @@ db.updateUser(u.id, {
 });
 ```
 
-After this, `hasActiveAccess()` returns false for that user, so protected pages
-redirect to `/upgrade?expired=1` and the API returns the "free trial has ended"
-message. Nothing is deleted — reversing it is just as easy (set `trialEndsAt`
-back to a future date).
+Reversing it is the same call with a future `trialEndsAt`.
 
-To list all complimentary accounts:
+## Listing complimentary accounts
 
 ```js
-require('./db').getAllUsers().filter(u => u.promoCode === 'dro')
+require('./db').getAllUsers().filter(u => u.promoCode === 'promo')
   .forEach(u => console.log(u.email, u.trialEndsAt, u.subscriptionStatus));
 ```

@@ -193,23 +193,23 @@ You only need to plug in your keys.
 ## 📊 Project Structure
 
 ```
-├── server.js              # Express backend
-├── package.json           # Dependencies
+├── server.js              # Express backend — routes, AI, SMS, Stripe
+├── db.js                  # SQLite schema + data access
+├── mailer.js              # Transactional email (nodemailer)
 ├── render.yaml            # Render deployment config
+├── data/                  # SQLite DB + backups/ (gitignored, persistent disk)
 ├── public/
 │   ├── index.html         # Landing page
 │   ├── dashboard.html     # Main dashboard
-│   ├── signup.html        # Signup form
-│   ├── starter.html       # GBP Starter (guided setup)
-│   ├── optimize.html      # GBP Optimizer
-│   ├── style.css          # Dashboard styles
-│   ├── landing.css        # Landing styles
-│   ├── signup.css         # Signup styles
-│   ├── starter.css        # Starter styles
-│   ├── starter.js         # Starter logic
-│   ├── optimize.css       # Optimizer styles
-│   └── optimize.js        # Optimizer logic
-└── DEPLOY.md              # Detailed deployment guide
+│   ├── login.html  signup.html  account.html  upgrade.html
+│   ├── starter.html       # GBP Starter (public lead magnet)
+│   ├── optimize.html      # GBP Optimizer (public lead magnet)
+│   ├── ranking-calculator.html
+│   ├── insights.html      # AI Growth Coach
+│   ├── app.js             # Dashboard logic
+│   └── *.css              # Per-page styles
+├── DEPLOY.md              # Deployment, Twilio 10DLC, Stripe, domain, smoke test
+└── PROMO.md               # Complimentary-trial promo code
 ```
 
 ## 🎯 Roadmap

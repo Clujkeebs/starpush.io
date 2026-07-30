@@ -540,6 +540,31 @@ async function generateAIInsights({ user, feedData, customers, memory }) {
   // setup state, the customer pipeline, and its own notes from past sessions.
   const dueFollowups     = coachDueFollowups(user.id);
   const pendingCustomers = coachPendingCustomers(user.id);
+
+  // Owner-reported Google totals. This is the only ground truth about whether
+  // any of this is working — in-app counts only reflect reviews the owner
+  // happened to paste in. Without it the coach is guessing.
+  const snapshots = db.getReviewSnapshots(user.id);
+  let googleTrend = null;
+  if (snapshots.length) {
+    const latest = snapshots[snapshots.length - 1];
+    googleTrend = {
+      currentReviewCount: latest.reviewCount,
+      currentRating:      latest.avgRating,
+      lastLoggedOn:       latest.takenOn,
+    };
+    if (snapshots.length >= 2) {
+      const first = snapshots[0];
+      const days  = Math.max(1, Math.round((new Date(latest.takenOn) - new Date(first.takenOn)) / 86400000));
+      googleTrend.daysTracked      = days;
+      googleTrend.reviewsGained    = latest.reviewCount - first.reviewCount;
+      googleTrend.reviewsPerMonth  = Number((((latest.reviewCount - first.reviewCount) / days) * 30).toFixed(1));
+      googleTrend.ratingChange     = (latest.avgRating != null && first.avgRating != null)
+        ? Number((latest.avgRating - first.avgRating).toFixed(2)) : null;
+      googleTrend.history = snapshots.slice(-6).map(s => ({ on: s.takenOn, count: s.reviewCount, rating: s.avgRating }));
+    }
+  }
+
   const ctx = {
     businessName:     user.businessName || 'Your Business',
     ownerFirstName:   (user.name || '').split(' ')[0] || null,
@@ -557,6 +582,7 @@ async function generateAIInsights({ user, feedData, customers, memory }) {
     customersNeverTexted:   pendingCustomers.length,
     hasGoogleReviewLink:    !!user.googleReviewLink,
     hasCustomSmsTemplate:   !!user.smsTemplate,
+    googleTrend:            googleTrend || 'Not tracked yet — the owner has never logged their real Google review count.',
     previousCoachNotes:     memory || 'None yet — this is your first session with this business.',
   };
 
@@ -586,6 +612,12 @@ Required structure (follow exactly):
 }
 
 Rules: Always generate 3-5 insights. Use real numbers. Be specific not generic. If they have 0 reviews, focus on getting started. If low ratings, address that. Always include at least one 'win' if there's anything positive.
+
+Google trend — read this carefully, it decides how honest you can be:
+"googleTrend" is the owner's REAL Google review count, which they logged by hand. Everything else in this data ("totalReviews", "avgRating") only counts reviews they happened to paste into the app, so it understates reality and must never be presented as their Google total.
+- If googleTrend has "reviewsGained" and "reviewsPerMonth", make one insight about actual measured progress, quoting those numbers and the days tracked. If reviewsGained is 0 or negative over 30+ days tracked, say so plainly as a "warning" — do not spin a flat line as a win. Base "projection" on reviewsPerMonth rather than guessing.
+- If googleTrend exists but has no "reviewsGained" (only one data point so far), tell them to log the number again in a couple of weeks so you can measure movement.
+- If googleTrend is the "Not tracked yet" string, make one insight asking them to log their real Google review count and star rating on the dashboard, and explain you cannot tell them whether any of this is working until they do. Do not invent progress you cannot see.
 Action buttons: "action" makes the insight EXECUTABLE — the app sends real SMS when the owner clicks it. Set "send_followups" ONLY if customersDueFollowup > 0 (texts a review reminder to those customers). Set "text_pending_customers" ONLY if customersNeverTexted > 0 (sends the first review request to customers who were added but never texted). Use each action at most once; otherwise use null.`,
     messages: [{ role: 'user', content: JSON.stringify(ctx) }],
   });
